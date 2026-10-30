@@ -7,6 +7,14 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+### Fixed
+- RSS feeds hosted on WordPress.com (192.0.78.0/24) no longer fail with "URL
+  resolves to a private network". Only 192.0.0.0/24 and 192.0.2.0/24 are
+  treated as special-purpose.
+- Full-text feeds no longer exhaust the storage budget on replay. Lean replay
+  reserves space per entry rather than four times the XML size, so one large
+  feed can no longer fill the shared replay buffer and block other feeds.
+
 ### Changed
 - Renamed the app to Read Later. The bundle is `Read Later.app`, the crate and
   executable are `macos-read-later`, and the repository is `macOS-read-later`.
