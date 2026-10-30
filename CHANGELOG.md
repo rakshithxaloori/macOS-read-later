@@ -7,6 +7,14 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-30
+
+### Fixed
+- "Database command could not be queued: sending on a full channel" no longer
+  appears after the window was hidden or covered during feed checks. Any number
+  of library changes now causes one reload, and a reload that finds the queue
+  full is retried instead of being dropped, so the list cannot stay out of date.
+
 ## [0.3.0] - 2026-10-30
 
 ### Fixed
