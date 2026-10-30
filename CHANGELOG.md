@@ -16,6 +16,11 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
   feed can no longer fill the shared replay buffer and block other feeds.
 
 ### Changed
+- Redesigned the Feeds screen. Feeds are grouped into Needs attention,
+  Following and Paused cards with publication monograms, status dots,
+  relative check times, a summary line, and a filter once there are six or
+  more feeds. Errors show inline with Try again, and the More menu adds
+  Copy feed address.
 - Renamed the app to Read Later. The bundle is `Read Later.app`, the crate and
   executable are `macos-read-later`, and the repository is `macOS-read-later`.
   The bundle identifier, Keychain service and portable export format keep their
