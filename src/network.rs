@@ -19,8 +19,7 @@ pub fn public_ip(ip: IpAddr) -> bool {
                 || x == 192 && y == 168
                 || x == 100 && (64..=127).contains(&y)
                 || x == 198 && (y == 18 || y == 19)
-                || x == 192 && y == 0
-                || x == 192 && y == 2
+                || x == 192 && y == 0 && (z == 0 || z == 2)
                 || x == 198 && y == 51 && z == 100
                 || x == 203 && y == 0 && z == 113)
         }
@@ -263,5 +262,13 @@ mod tests {
             "https://example.com/a"
         );
         assert!(public_ip("8.8.8.8".parse().unwrap()));
+        // WordPress.com serves from 192.0.78.0/24; only 192.0.0.0/24 and
+        // TEST-NET-1 192.0.2.0/24 are special-purpose within 192.0.0.0/16.
+        for ip in ["192.0.78.12", "192.0.1.1", "192.2.0.1"] {
+            assert!(public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["192.0.0.9", "192.0.2.1", "::ffff:192.0.2.1"] {
+            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
+        }
     }
 }

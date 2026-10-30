@@ -372,6 +372,9 @@ pub fn persist_capture(
     tx.commit()?;
     Ok(id)
 }
+/// Upper bound for one lean RSS entry: bounded URL, titles, author, preview,
+/// identity/provenance rows, their indexes, and WAL page amplification.
+const REPLAY_ENTRY_BYTES: u64 = 64 * 1024;
 pub fn replay_capture(c: &mut Connection, lease: &WorkerLease, job: &Job, id: &str) -> Result<()> {
     let (xml,url):(String,String)=c.query_row("SELECT x.xml,f.url FROM feed_captures x JOIN feeds f ON f.id=x.feed_id AND f.user_id=x.user_id WHERE x.user_id=?1 AND x.id=?2 AND x.feed_id=?3 AND length(CAST(x.xml AS BLOB))<=5242880",params![OWNER,id,job.target_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let upper = xml.to_ascii_uppercase();
@@ -382,7 +385,15 @@ pub fn replay_capture(c: &mut Connection, lease: &WorkerLease, job: &Job, id: &s
     let parsed = feed_rs::parser::parse(xml.as_bytes()).context("Feed XML could not be parsed")?;
     ensure!(parsed.entries.len() <= 5000, "Feed exceeds 5,000 entries");
     let base = url::Url::parse(&url)?;
-    let _reservation = library::reserve_write(c, xml.len() as u64 * 4 + 1_048_576)?;
+    // Lean replay writes bounded metadata per entry, never entry bodies, so a
+    // full-text feed must not reserve space proportional to its XML.
+    let lean_write = (parsed.entries.len() as u64).saturating_mul(REPLAY_ENTRY_BYTES);
+    let write = if db_compat::is_lean(c)? {
+        lean_write.min(xml.len() as u64 * 4)
+    } else {
+        xml.len() as u64 * 4
+    };
+    let _reservation = library::reserve_write(c, write + 1_048_576)?;
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     job_owned(&tx, lease, job)?;
     // Removal while parsing prevents publication. Pause preserves received arrivals.
