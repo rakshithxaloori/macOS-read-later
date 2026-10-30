@@ -11,6 +11,7 @@ use crate::{
     ui::{self, Action, View},
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::sync::mpsc::TrySendError;
 
 #[derive(Clone)]
 enum Dialog {
@@ -20,7 +21,45 @@ enum Dialog {
     DeleteMatching { query: Query, expected: u32 },
     Details { title: String, message: String },
 }
+/// How soon a reload that found the database queue full is tried again.
+const RELOAD_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+
+enum ReloadStep {
+    List,
+    Summary,
+    Selected,
+}
+
+/// Reloads owed to the UI. Change signals pile up while a hidden window draws
+/// no frames, and one reload covers any number of them. A step stays owed until
+/// the database queue accepts it, so a full queue cannot leave the list stale.
+#[derive(Default)]
+struct PendingReload {
+    list: bool,
+    summary: bool,
+    selected: bool,
+}
+impl PendingReload {
+    fn pending(&self) -> bool {
+        self.list || self.summary || self.selected
+    }
+    fn flush(&mut self, mut queue: impl FnMut(ReloadStep) -> bool) {
+        if self.list && queue(ReloadStep::List) {
+            self.list = false;
+            self.summary = true;
+        }
+        if self.summary && queue(ReloadStep::Summary) {
+            self.summary = false;
+        }
+        if self.selected && queue(ReloadStep::Selected) {
+            self.selected = false;
+        }
+    }
+}
+
 pub struct App {
+    repaint: egui::Context,
+    reload: PendingReload,
     dirs: AppDirs,
     settings: Settings,
     backend: Backend,
@@ -158,6 +197,8 @@ impl App {
             fetched_at: None,
             has_more: false,
             matching_count: 0,
+            repaint: cc.egui_ctx.clone(),
+            reload: PendingReload::default(),
             logos: std::collections::HashMap::new(),
             dialog: None,
             dialog_input: ui::dialog::Input::default(),
@@ -247,20 +288,53 @@ impl App {
         }
     }
     fn refresh(&mut self) {
-        self.generation += 1;
-        self.loading = true;
-        let loaded = if self.view == View::Archive {
-            self.settings.archive_loaded
-        } else {
-            self.settings.inbox_loaded
+        self.reload.list = true;
+        self.flush_reload();
+    }
+    fn flush_reload(&mut self) {
+        let mut reload = std::mem::take(&mut self.reload);
+        reload.flush(|step| self.queue_reload(step));
+        if reload.pending() {
+            self.repaint.request_repaint_after(RELOAD_RETRY);
         }
-        .max(60);
-        self.send(Command::Reconcile {
-            generation: self.generation,
-            query: self.query().clone(),
-            loaded: loaded as usize,
-        });
-        self.send(Command::Summary);
+        self.reload = reload;
+    }
+    fn queue_reload(&mut self, step: ReloadStep) -> bool {
+        let command = match step {
+            ReloadStep::List => {
+                self.generation += 1;
+                self.loading = true;
+                let loaded = if self.view == View::Archive {
+                    self.settings.archive_loaded
+                } else {
+                    self.settings.inbox_loaded
+                }
+                .max(60);
+                Command::Reconcile {
+                    generation: self.generation,
+                    query: self.query().clone(),
+                    loaded: loaded as usize,
+                }
+            }
+            ReloadStep::Summary => Command::Summary,
+            ReloadStep::Selected => {
+                let Some(id) = self.selected.as_ref().map(|b| b.article.id.clone()) else {
+                    return true;
+                };
+                Command::RefreshSelected {
+                    generation: self.body_generation,
+                    id,
+                }
+            }
+        };
+        match self.backend.commands.try_send(command) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => false,
+            Err(TrySendError::Disconnected(_)) => {
+                self.error = "The library database stopped responding.".into();
+                true
+            }
+        }
     }
     fn open(&mut self, id: ArticleId) {
         if self
@@ -307,14 +381,14 @@ impl App {
             {
                 self.send(Command::Magazine(crate::magazine::Command::Open(id)));
             }
-            self.send(Command::Summary);
+            self.reload.summary = true;
         }
         while let Ok(event) = self.intake_events.try_recv() {
             match event {
-                crate::intake::Event::LibraryChanged => self.refresh(),
+                crate::intake::Event::LibraryChanged => self.reload.list = true,
                 crate::intake::Event::State { enabled, error } => {
                     self.intake_enabled = enabled;
-                    self.send(Command::Summary);
+                    self.reload.summary = true;
                     if let Some(error) = error {
                         self.error = error;
                     }
@@ -327,7 +401,7 @@ impl App {
                     self.whatsapp_view = state;
                     self.update_qr(ctx);
                 }
-                WhatsAppEvent::LibraryChanged => self.refresh(),
+                WhatsAppEvent::LibraryChanged => self.reload.list = true,
             }
         }
         while let Ok(e) = self.backend.events.try_recv() {
@@ -485,7 +559,7 @@ impl App {
                     }
                     let reload = matches!(&event, crate::magazine::Event::Covers(_));
                     self.magazine_state.receive(event);
-                    self.send(Command::Summary);
+                    self.reload.summary = true;
                     if reload
                         && let Some(id) = self
                             .magazine_state
@@ -519,13 +593,8 @@ impl App {
                     if let Some(intake) = &self.intake {
                         let _ = intake.command(crate::intake::Command::Wake);
                     }
-                    self.refresh();
-                    if let Some(id) = self.selected.as_ref().map(|b| b.article.id.clone()) {
-                        self.send(Command::RefreshSelected {
-                            generation: self.body_generation,
-                            id,
-                        });
-                    }
+                    self.reload.list = true;
+                    self.reload.selected = true;
                 }
                 Event::Pdf { id, title, bytes } => {
                     match PdfWindow::open(&bytes, &format!("{title} · Read Later")) {
@@ -565,6 +634,7 @@ impl App {
                 }
             }
         }
+        self.flush_reload();
     }
     fn begin_transfer(
         &mut self,
@@ -1519,4 +1589,40 @@ pub fn configure(ctx: &egui::Context) {
     }
     ctx.set_fonts(fonts);
     crate::theme::configure(ctx, crate::native_menu::reduce_motion());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_burst_of_change_signals_queues_one_reload() {
+        let mut reload = PendingReload::default();
+        for _ in 0..64 {
+            reload.list = true;
+            reload.selected = true;
+        }
+        let mut queued = 0;
+        reload.flush(|_| {
+            queued += 1;
+            true
+        });
+        assert_eq!(queued, 3);
+        assert!(!reload.pending());
+    }
+
+    #[test]
+    fn a_full_queue_keeps_the_reload_owed() {
+        let mut reload = PendingReload {
+            list: true,
+            ..Default::default()
+        };
+        reload.flush(|_| false);
+        assert!(reload.list);
+        reload.flush(|step| matches!(step, ReloadStep::List));
+        assert!(!reload.list);
+        assert!(reload.summary);
+        reload.flush(|_| true);
+        assert!(!reload.pending());
+    }
 }
