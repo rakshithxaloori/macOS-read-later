@@ -110,15 +110,18 @@ pub fn feeds(ui: &mut Ui, feeds: &[Feed], actions: &mut Vec<Action>) {
                 });
             ui.add_space(22.);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
             let (mark, _) = ui.allocate_exact_size(vec2(14., 14.), egui::Sense::hover());
             icons::draw(ui, mark, icons::Icon::Rss, colors.muted);
-            ui.label(
-                RichText::new(
-                    "Once a story arrives, it stays in your library. Pausing, feed cutoffs and unsubscribing never remove it.",
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Once a story arrives, it stays in your library. Pausing, feed cutoffs and unsubscribing never remove it.",
+                    )
+                    .size(12.)
+                    .color(colors.muted),
                 )
-                .size(12.)
-                .color(colors.muted),
+                .wrap(),
             );
         });
         ui.add_space(8.);
