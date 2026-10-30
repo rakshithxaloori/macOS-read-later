@@ -961,6 +961,26 @@ mod tests {
     }
 
     #[test]
+    fn reader_marks_rules_for_native_drawing_without_changing_production_rtf() {
+        let document = RichDocument::parse("<p>Before</p><div><hr></div><p>After</p>");
+        assert!(document.blocks.contains(&Block::Rule));
+        let production =
+            String::from_utf8(native_rtf(&document, &HashMap::new(), 19., false).unwrap()).unwrap();
+        assert!(production.contains(RTF_RULE));
+        let reader = String::from_utf8(
+            reader_rtf(&document, &HashMap::new(), 19., ReaderFont::Georgia).unwrap(),
+        )
+        .unwrap();
+        assert!(!reader.contains(RTF_RULE));
+        assert_eq!(
+            reader
+                .matches(&rule_marker(&document.source_sha256))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn reader_font_changes_only_its_generated_font_entry() {
         let document = RichDocument::parse(
             "<h2>Heading Georgia</h2><p><strong>Bold</strong> <em>Italic</em> <a href='https://example.org/font'>Link</a> <code>Menlo code</code></p><table><tr><td>Cell</td></tr></table>",
@@ -1126,7 +1146,11 @@ pub fn native_rtf(
                         return Err(format!("Saved image is missing: {source}"));
                     } else {
                         out.push_str("{\\pard\\f2\\fs24\\cf3 ");
-                        out.push_str(&escaped(&format!("Saved image unavailable: {alt}")));
+                        out.push_str(&escaped(&if alt.trim().is_empty() {
+                            "Saved image unavailable".to_owned()
+                        } else {
+                            format!("Saved image unavailable: {alt}")
+                        }));
                         out.push_str("\\par}\n");
                     }
                 }
@@ -1198,7 +1222,10 @@ pub fn native_rtf(
                         }
                     }
                 }
-                Block::Rule => out.push_str("{\\pard\\brdrb\\brdrs\\brdrw10\\par}\n"),
+                Block::Rule => {
+                    out.push_str(RTF_RULE);
+                    out.push('\n');
+                }
                 Block::Details { summary, content } => {
                     out.push_str("{\\pard\\b ");
                     inline(out, summary);
@@ -1249,7 +1276,20 @@ pub fn reader_rtf(
             &format!("{{\\f0 {};}}", font.family()),
             1,
         )
+        // AppKit's RTF reader ignores paragraph borders, so the reader draws
+        // horizontal rules as native text blocks at these private markers.
+        .replace(
+            RTF_RULE,
+            &format!(
+                "{{\\pard\\fs2 {}\\par}}",
+                rule_marker(&document.source_sha256)
+            ),
+        )
         .into_bytes())
+}
+const RTF_RULE: &str = "{\\pard\\brdrb\\brdrs\\brdrw10\\par}";
+fn rule_marker(document_sha256: &str) -> String {
+    format!("RLRULE{document_sha256}")
 }
 
 /// Reader appearance changes only the color table, leaving production RTF untouched.
@@ -1791,6 +1831,51 @@ pub mod native {
         text.setTextContainerInset(NSSize::new(0.0, 0.0));
         configure_text_appearance(text, Appearance::Light);
     }
+    /// The reader body's attributed text, with screen typography and native blocks.
+    pub fn reader_document(
+        document: &RichDocument,
+        images: &HashMap<String, Vec<u8>>,
+        body_size: f32,
+        font: ReaderFont,
+        appearance: Appearance,
+    ) -> Result<Retained<NSAttributedString>, String> {
+        let half_points = (body_size * 2.0).round() as u32;
+        let mut rtf = String::from_utf8(themed_reader_rtf(
+            document, images, body_size, font, appearance,
+        )?)
+        .map_err(|e| e.to_string())?
+        // 1.6 line height for screen reading; magazine RTF keeps its own spacing.
+        .replace("\\sl444\\slmult1", "\\sl384\\slmult1")
+        .replace(
+            &format!("\\sa{}", half_points * 5),
+            &format!("\\sa{}", (body_size * 1.3 * 20.0).round() as u32),
+        )
+        .replace("\\f2\\fs24\\cf3", "\\f2\\fs26\\cf3\\sl360\\slmult1\\sa160")
+        // Quotes are set upright beside a native bar, as publishers style them.
+        .replace("\\li360\\i ", "\\li360 ")
+        // Images otherwise butt against the following paragraph.
+        .replace(
+            "{\\pard\\qc ",
+            &format!(
+                "{{\\pard\\qc\\sa{} ",
+                (body_size * 0.8 * 20.0).round() as u32
+            ),
+        );
+        // Keep the heading hierarchy: a section heading (h3-h6) must not
+        // match the size of a top-level one.
+        for (heading, scale, before) in [(64, 1.6, 1.5), (54, 1.35, 1.4), (46, 1.15, 1.25)] {
+            rtf = rtf.replace(
+                &format!("\\b\\fs{heading}\\keepn"),
+                &format!(
+                    "\\b\\fs{}\\sl300\\slmult1\\sb{}\\sa{}\\keepn",
+                    (body_size * 2.0 * scale).round() as u32,
+                    (body_size * before * 20.0).round() as u32,
+                    (body_size * 0.6 * 20.0).round() as u32
+                ),
+            );
+        }
+        reader_attributed_from_rtf(document, images, rtf.as_bytes(), appearance)
+    }
     /// AppKit decodes RTF colors as calibrated RGB. Restore exact shared sRGB
     /// tokens for the reader after import; production/PDF decoding stays independent.
     fn reader_attributed_from_rtf(
@@ -1842,7 +1927,127 @@ pub mod native {
             }
             index = range.location + range.length.max(1);
         }
+        reader_text_blocks(
+            &output,
+            &super::rule_marker(&document.source_sha256),
+            colors,
+        );
         Ok(output.into_super())
+    }
+    /// Draw rules and quote bars as native text blocks; RTF import cannot express them.
+    fn reader_text_blocks(
+        output: &NSMutableAttributedString,
+        rule_marker: &str,
+        colors: crate::theme::Palette,
+    ) {
+        use objc2_app_kit::{NSMutableParagraphStyle, NSTextBlock, NSTextBlockLayer};
+        use objc2_foundation::{NSMutableCopying, NSRectEdge};
+        let absolute = NSTextBlockValueType::AbsoluteValueType;
+        let marker = NSString::from_str(rule_marker);
+        loop {
+            let range = output.string().rangeOfString(&marker);
+            // NSNotFound is NSIntegerMax, so test the empty range instead.
+            if range.length == 0 {
+                break;
+            }
+            output.replaceCharactersInRange_withString(range, &NSString::from_str("\u{a0}"));
+            let paragraph = output
+                .string()
+                .paragraphRangeForRange(NSRange::new(range.location, 1));
+            let block = NSTextBlock::new();
+            block.setValue_type_forDimension(
+                100.0,
+                NSTextBlockValueType::PercentageValueType,
+                NSTextBlockDimension::Width,
+            );
+            block.setWidth_type_forLayer_edge(
+                1.0,
+                absolute,
+                NSTextBlockLayer::Border,
+                NSRectEdge::MaxY,
+            );
+            block.setBorderColor(Some(&native_color(colors.divider)));
+            block.setWidth_type_forLayer_edge(
+                4.0,
+                absolute,
+                NSTextBlockLayer::Margin,
+                NSRectEdge::MinY,
+            );
+            block.setWidth_type_forLayer_edge(
+                28.0,
+                absolute,
+                NSTextBlockLayer::Margin,
+                NSRectEdge::MaxY,
+            );
+            let style = NSMutableParagraphStyle::new();
+            style.setTextBlocks(&NSArray::from_retained_slice(&[block]));
+            unsafe {
+                output.addAttribute_value_range(NSParagraphStyleAttributeName, &style, paragraph);
+            }
+        }
+        // Quote paragraphs are the only ones with an equal 18 pt head and first-line
+        // indent; list items hang their marker. Consecutive quotes share one bar.
+        let text = output.string();
+        let mut index = 0;
+        let mut bar: Option<Retained<NSTextBlock>> = None;
+        while index < text.length() {
+            let paragraph = text.paragraphRangeForRange(NSRange::new(index, 0));
+            let style = unsafe {
+                output.attribute_atIndex_effectiveRange(
+                    NSParagraphStyleAttributeName,
+                    paragraph.location,
+                    std::ptr::null_mut(),
+                )
+            };
+            let style = style
+                .as_deref()
+                .and_then(|value| value.downcast_ref::<NSParagraphStyle>())
+                .filter(|style| {
+                    style.textBlocks().is_empty()
+                        && (style.headIndent() - 18.0).abs() < 0.01
+                        && (style.firstLineHeadIndent() - 18.0).abs() < 0.01
+                });
+            if let Some(style) = style {
+                let block = bar
+                    .get_or_insert_with(|| {
+                        let block = NSTextBlock::new();
+                        block.setValue_type_forDimension(
+                            100.0,
+                            NSTextBlockValueType::PercentageValueType,
+                            NSTextBlockDimension::Width,
+                        );
+                        block.setWidth_type_forLayer_edge(
+                            3.0,
+                            absolute,
+                            NSTextBlockLayer::Border,
+                            NSRectEdge::MinX,
+                        );
+                        block.setBorderColor(Some(&native_color(colors.accent)));
+                        block.setWidth_type_forLayer_edge(
+                            18.0,
+                            absolute,
+                            NSTextBlockLayer::Padding,
+                            NSRectEdge::MinX,
+                        );
+                        block
+                    })
+                    .clone();
+                let quoted: Retained<NSMutableParagraphStyle> = style.mutableCopy();
+                quoted.setHeadIndent(0.0);
+                quoted.setFirstLineHeadIndent(0.0);
+                quoted.setTextBlocks(&NSArray::from_retained_slice(&[block]));
+                unsafe {
+                    output.addAttribute_value_range(
+                        NSParagraphStyleAttributeName,
+                        &quoted,
+                        paragraph,
+                    );
+                }
+            } else {
+                bar = None;
+            }
+            index = paragraph.location + paragraph.length.max(1);
+        }
     }
     fn native_color(color: egui::Color32) -> Retained<NSColor> {
         NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -2579,34 +2784,7 @@ pub mod native {
             body_size: f32,
             font: ReaderFont,
         ) -> Result<(), String> {
-            let half_points = (body_size * 2.0).round() as u32;
-            let mut rtf = String::from_utf8(themed_reader_rtf(
-                document,
-                images,
-                body_size,
-                font,
-                self.appearance,
-            )?)
-            .map_err(|e| e.to_string())?
-            // 1.6 line height for screen reading; magazine RTF keeps its own spacing.
-            .replace("\\sl444\\slmult1", "\\sl384\\slmult1")
-            .replace(
-                &format!("\\sa{}", half_points * 5),
-                &format!("\\sa{}", (body_size * 1.3 * 20.0).round() as u32),
-            )
-            .replace("\\f2\\fs24\\cf3", "\\f2\\fs26\\cf3\\sl360\\slmult1\\sa160");
-            for heading in [64, 54, 46] {
-                rtf = rtf.replace(
-                    &format!("\\b\\fs{heading}\\keepn"),
-                    &format!(
-                        "\\b\\fs{}\\sl312\\slmult1\\sb{}\\keepn",
-                        (body_size * 3.0).round() as u32,
-                        (body_size * 1.5 * 20.0).round() as u32
-                    ),
-                );
-            }
-            let attributed =
-                reader_attributed_from_rtf(document, images, rtf.as_bytes(), self.appearance)?;
+            let attributed = reader_document(document, images, body_size, font, self.appearance)?;
             let mut character = 0;
             while character < attributed.length() {
                 let mut range = NSRange::new(character, 1);

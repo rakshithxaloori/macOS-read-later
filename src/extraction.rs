@@ -348,6 +348,105 @@ pub fn word_count(html: &str) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
+/// Media players and social cards cannot run natively. Replace them with honest
+/// static equivalents: a link to watch the video, or the post's published text.
+fn embed_html(node: ElementRef<'_>, page_url: &Url) -> Option<String> {
+    let element = node.value();
+    let video = match element.name() {
+        "video" => Some(page_url.to_string()),
+        "iframe" => {
+            let source = element.attr("src").and_then(|s| page_url.join(s).ok())?;
+            let host = source.host_str().unwrap_or_default();
+            let id = source
+                .path_segments()
+                .and_then(|mut s| s.next_back())
+                .unwrap_or_default();
+            if host.ends_with("youtube.com") || host.ends_with("youtube-nocookie.com") {
+                Some(format!("https://www.youtube.com/watch?v={id}"))
+            } else if host == "player.vimeo.com" {
+                Some(format!("https://vimeo.com/{id}"))
+            } else {
+                // Unknown frames are not video evidence; keep the existing removal.
+                return None;
+            }
+        }
+        _ if element.attr("data-component-name") == Some("VideoEmbedPlayer") => {
+            Some(page_url.to_string())
+        }
+        _ => None,
+    };
+    if let Some(link) = video {
+        let target = if link.contains("youtube.com") {
+            "Watch on YouTube"
+        } else if link.contains("vimeo.com") {
+            "Watch on Vimeo"
+        } else {
+            "Watch on the original page"
+        };
+        return Some(format!(
+            "<figure><figcaption>Video · <a href=\"{}\">{target}</a></figcaption></figure>",
+            escape(&link)
+        ));
+    }
+    if element.attr("data-component-name") != Some("Twitter2ToDOM") {
+        return None;
+    }
+    let attrs = std::iter::once(node)
+        .chain(node.descendants().filter_map(ElementRef::wrap))
+        .find_map(|e| e.value().attr("data-attrs"))?;
+    let tweet: serde_json::Value = serde_json::from_str(attrs).ok()?;
+    let field = |name: &str| tweet.get(name).and_then(|v| v.as_str()).unwrap_or_default();
+    let text = Html::parse_fragment(field("full_text"))
+        .root_element()
+        .text()
+        .collect::<String>();
+    if text.trim().is_empty() {
+        return None;
+    }
+    let mut out = String::from("<blockquote>");
+    for paragraph in text.split("\n\n").filter(|p| !p.trim().is_empty()) {
+        let lines: Vec<_> = paragraph.trim().lines().map(|l| escape(l.trim())).collect();
+        out.push_str(&format!("<p>{}</p>", lines.join("<br>")));
+    }
+    let mut photos = String::new();
+    for photo in tweet
+        .get("photos")
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("img_url")?.as_str())
+    {
+        photos.push_str(&format!("<p><img src=\"{}\" alt=\"\"></p>", escape(photo)));
+    }
+    let date = chrono::DateTime::parse_from_rfc3339(field("date"))
+        .map(|d| d.format("%b %-d, %Y").to_string())
+        .unwrap_or_default();
+    let byline = match (field("name"), field("username")) {
+        ("", "") => String::new(),
+        (name, "") => escape(name),
+        ("", user) => format!("@{}", escape(user)),
+        (name, user) => format!("{} (@{})", escape(name), escape(user)),
+    };
+    let link = if date.is_empty() {
+        "View post".to_owned()
+    } else {
+        date
+    };
+    let source = if field("url").is_empty() {
+        link
+    } else {
+        format!("<a href=\"{}\">{link}</a>", escape(field("url")))
+    };
+    out.push_str(&format!(
+        "<p>— {}{source}</p></blockquote>{photos}",
+        if byline.is_empty() {
+            String::new()
+        } else {
+            format!("{byline} · ")
+        }
+    ));
+    Some(out)
+}
 pub fn extract(body: &str, url: &str) -> Result<Extraction, String> {
     if body.len() > 5 * 1024 * 1024 {
         return Err("Publisher response exceeds 5 MB".into());
@@ -419,43 +518,54 @@ pub fn extract(body: &str, url: &str) -> Result<Extraction, String> {
     let mut prepared = source.html();
     let mut structures = Vec::new();
     if let Some(root) = source_root {
-        for (index, node) in root
+        // Headings, rules and embeds are protected too: Readability drops headings
+        // with "header" classes and empty rule wrappers on density heuristics.
+        let nodes: Vec<_> = root
             .select(&select(
-                "figure,img,table,details,.footnote,.footnotes,[role=doc-footnote],[role=doc-endnotes]",
+                "figure,img,table,details,.footnote,.footnotes,[role=doc-footnote],[role=doc-endnotes],h1,h2,h3,h4,h5,h6,hr,video,iframe,[data-component-name=VideoEmbedPlayer],[data-component-name=Twitter2ToDOM]",
             ))
-            .filter(|n| !excluded(*n))
-            .enumerate()
-        {
+            .filter(|n| {
+                !excluded(*n) && (n.value().name() != "iframe" || embed_html(*n, &page_url).is_some())
+            })
+            .collect();
+        let protected: std::collections::HashSet<_> = nodes.iter().map(|n| n.id()).collect();
+        for (index, node) in nodes.into_iter().enumerate() {
             if node
                 .ancestors()
                 .filter_map(ElementRef::wrap)
                 .take_while(|p| p.id() != root.id())
-                .any(|p| {
-                    matches!(p.value().name(), "figure" | "table" | "details")
-                        || p.value()
-                            .classes()
-                            .any(|c| matches!(c, "footnote" | "footnotes"))
-                        || matches!(
-                            p.value().attr("role"),
-                            Some("doc-footnote" | "doc-endnotes")
-                        )
-                })
+                .any(|p| protected.contains(&p.id()))
             {
                 continue;
             }
             let marker = format!("reader-structure-{}-{index}", &source_sha256[..16]);
             let original = node.html();
-            let structure_text=normalized(&node.text().collect::<String>());
+            let replacement = embed_html(node, &page_url).unwrap_or_else(|| original.clone());
+            let structure_text = normalized(
+                &Html::parse_fragment(&replacement)
+                    .root_element()
+                    .text()
+                    .collect::<String>(),
+            );
             // Empty image-only structures need a nonempty placeholder, otherwise
             // Readability removes the blank paragraph. This private marker is
             // restored at its retained position and cannot reach saved prose.
-            let sentinel=format!("READER_PRIVATE_STRUCTURE_{}_{}",source_sha256,index);
+            let sentinel = format!("READER_PRIVATE_STRUCTURE_{}_{}", source_sha256, index);
             let placeholder = format!(
                 "<p id=\"{marker}\">{}</p>",
-                escape(if structure_text.is_empty(){&sentinel}else{&structure_text})
+                escape(if structure_text.is_empty() {
+                    &sentinel
+                } else {
+                    &structure_text
+                })
             );
             prepared = prepared.replacen(&original, &placeholder, 1);
-            structures.push((marker, original,sentinel));
+            // Losing an added layout structure is not missing article content.
+            let essential = !matches!(
+                node.value().name(),
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "video" | "iframe"
+            ) && node.value().attr("data-component-name").is_none();
+            structures.push((marker, replacement, sentinel, essential));
         }
     }
     // Hidden/nonarticle controls and scripts remain data and cannot execute.
@@ -473,7 +583,7 @@ pub fn extract(body: &str, url: &str) -> Result<Extraction, String> {
         .map_err(|e| format!("No readable article found: {e}"))?;
     let mut content = article.content.to_string();
     let mut missing_structure = false;
-    for (marker, original, sentinel) in structures {
+    for (marker, original, sentinel, essential) in structures {
         let extracted = Html::parse_fragment(&content);
         if let Some(placeholder) = extracted
             .select(&Selector::parse(&format!("[id='{marker}']")).map_err(|e| e.to_string())?)
@@ -481,7 +591,7 @@ pub fn extract(body: &str, url: &str) -> Result<Extraction, String> {
         {
             content = content.replacen(&placeholder.html(), &original, 1);
         } else {
-            missing_structure = true;
+            missing_structure |= essential;
             // A parser may retain placeholder text while dropping its ID. Remove
             // the deterministic private text rather than inventing source prose.
             content = content.replace(&sentinel, "");
@@ -671,6 +781,48 @@ pub fn retention_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn headings_rules_and_embeds_survive_readability() {
+        let prose =
+            "Reading copy keeps every sentence of this paragraph intact for the reader. ".repeat(6);
+        let tweet = r#"{"url":"https://x.com/someone/status/1","full_text":"First line\n\nSecond <span class=\"tweet-fake-link\">@friend</span>","username":"someone","name":"Some One","date":"2026-10-21T04:20:59.000Z","photos":[]}"#;
+        let html = format!(
+            "<html><body><article><p>{prose}</p><div><hr/></div>\
+             <h4 class=\"header-anchor-post\">(1) <a href=\"https://example.org/story\">Section title</a><div class=\"header-anchor-parent\"><button></button></div></h4>\
+             <p>{prose}</p>\
+             <div data-component-name=\"VideoEmbedPlayer\" id=\"media-1\"><div aria-hidden=\"true\"></div></div>\
+             <p>{prose}</p>\
+             <a href=\"https://x.com/someone/status/1\" data-component-name=\"Twitter2ToDOM\"><div class=\"twitter-embed\" data-attrs=\"{}\"><img src=\"https://example.org/avatar.jpg\"><p>Some One@someone</p></div></a>\
+             <iframe src=\"https://www.youtube-nocookie.com/embed/abc123?rel=0\"></iframe>\
+             <p>{prose}</p></article></body></html>",
+            escape(tweet)
+        );
+        let extraction = extract(&html, "https://example.org/p/post").unwrap();
+        let out = &extraction.html;
+        assert!(out.contains("<hr>"), "{out}");
+        assert!(
+            out.contains("<h4>(1) <a href=\"https://example.org/story\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("Video · <a href=\"https://example.org/p/post\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("<a href=\"https://www.youtube.com/watch?v=abc123\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("<blockquote><p>First line</p><p>Second @friend</p>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("— Some One (@someone) · <a href=\"https://x.com/someone/status/1\""),
+            "{out}"
+        );
+        assert!(!out.contains("avatar.jpg"), "{out}");
+        assert!(!out.contains("READER_PRIVATE_STRUCTURE"), "{out}");
+    }
     #[test]
     fn sanitizer_keeps_native_footnote_targets_and_same_page_links() {
         let html = clean_html(

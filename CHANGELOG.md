@@ -14,8 +14,19 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 - Full-text feeds no longer exhaust the storage budget on replay. Lean replay
   reserves space per entry rather than four times the XML size, so one large
   feed can no longer fill the shared replay buffer and block other feeds.
+- Section headings with "header" classes (as on Substack) and horizontal rules
+  inside wrappers are no longer dropped during extraction.
+- The reader now draws horizontal rules. AppKit ignored the RTF border, so
+  rules were invisible even when kept.
+- Videos are no longer silently removed. Each one becomes a "Video · Watch on
+  the original page" (or YouTube/Vimeo) link where the player was.
+- Substack tweet embeds become a quoted post with the author, date and link
+  instead of loose avatar, name and view-count lines.
 
 ### Changed
+- Reader quotes are upright with an accent bar instead of indented italics,
+  section headings (h3 and below) are smaller than top-level ones, and
+  images get space before the next paragraph.
 - Redesigned the Feeds screen. Feeds are grouped into Needs attention,
   Following and Paused cards with publication monograms, status dots,
   relative check times, a summary line, and a filter once there are six or
