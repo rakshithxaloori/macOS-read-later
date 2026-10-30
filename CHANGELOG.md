@@ -7,6 +7,8 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
 ### Fixed
 - RSS feeds hosted on WordPress.com (192.0.78.0/24) no longer fail with "URL
   resolves to a private network". Only 192.0.0.0/24 and 192.0.2.0/24 are
