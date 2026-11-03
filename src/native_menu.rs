@@ -17,6 +17,8 @@ pub enum Command {
     Copy,
     Paste,
     SelectAll,
+    CheckForUpdates,
+    ToggleAutomaticUpdates,
     DisplayPreferencesChanged,
 }
 static QUEUE: Mutex<Vec<Command>> = Mutex::new(Vec::new());
@@ -93,7 +95,7 @@ mod macos {
             fn choose(&self, sender: &NSMenuItem) {
                 let edit_action=match sender.tag(){11=>Some(sel!(cut:)),12=>Some(sel!(copy:)),13=>Some(sel!(paste:)),14=>Some(sel!(selectAll:)),_=>None};
                 if let Some(action)=edit_action{let app=NSApplication::sharedApplication(self.mtm());if let Some(first)=app.keyWindow().and_then(|w|w.firstResponder()){let native:bool=unsafe{msg_send![&first,isKindOfClass:objc2::class!(NSTextView)]};if native{unsafe{app.sendAction_to_from(action,Some(&first),None);}return;}}}
-                let command = match sender.tag() { 0=>Command::Show,1=>Command::Quit,2=>Command::Save,3=>Command::Feed,4=>Command::Inbox,5=>Command::Archive,6=>Command::Feeds,7=>Command::Magazines,8=>Command::WhatsApp,9=>Command::ImportExport,10=>Command::Search,11=>Command::Cut,12=>Command::Copy,13=>Command::Paste,14=>Command::SelectAll,_=>return };
+                let command = match sender.tag() { 0=>Command::Show,1=>Command::Quit,2=>Command::Save,3=>Command::Feed,4=>Command::Inbox,5=>Command::Archive,6=>Command::Feeds,7=>Command::Magazines,8=>Command::WhatsApp,9=>Command::ImportExport,10=>Command::Search,11=>Command::Cut,12=>Command::Copy,13=>Command::Paste,14=>Command::SelectAll,15=>Command::CheckForUpdates,16=>Command::ToggleAutomaticUpdates,_=>return };
                 push(command);
             }
         }
@@ -105,6 +107,24 @@ mod macos {
     extern "C-unwind" fn terminate(_: *mut AnyObject, _: Sel, _: *mut NSApplication) -> usize {
         push(Command::Quit);
         0
+    }
+    const UPDATES_TAG: isize = 15;
+    const AUTOMATIC_UPDATES_TAG: isize = 16;
+    pub fn set_automatic_updates(on: bool) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if let Some(item) = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .and_then(|bar| bar.itemAtIndex(0))
+            .and_then(|item| item.submenu())
+            .and_then(|menu| menu.itemWithTag(AUTOMATIC_UPDATES_TAG))
+        {
+            let state: isize = on.into();
+            unsafe {
+                let _: () = msg_send![&item, setState: state];
+            }
+        }
     }
     pub fn install() {
         let Some(mtm) = MainThreadMarker::new() else {
@@ -130,8 +150,8 @@ mod macos {
             let bar = NSMenu::new(mtm);
             for (title, entries) in [
                 (
-                    "Read Later",
-                    vec![("Show Read Later", "1", 0), ("Quit Read Later", "q", 1)],
+                    "Reader",
+                    vec![("Show Reader", "1", 0), ("Quit Reader", "q", 1)],
                 ),
                 ("File", vec![("Save Link…", "n", 2), ("Add Feed…", "N", 3)]),
                 (
@@ -214,13 +234,34 @@ mod macos {
                 let about = unsafe {
                     NSMenuItem::initWithTitle_action_keyEquivalent(
                         NSMenuItem::alloc(mtm),
-                        &NSString::from_str("About Read Later"),
+                        &NSString::from_str("About Reader"),
                         Some(sel!(orderFrontStandardAboutPanel:)),
                         &NSString::from_str(""),
                     )
                 };
                 app_menu.insertItem_atIndex(&about, 0);
-                app_menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 1);
+                for (index, (label, tag)) in [
+                    ("Check for Updates…", UPDATES_TAG),
+                    ("Check for Updates Automatically", AUTOMATIC_UPDATES_TAG),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let item = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str(label),
+                            Some(sel!(choose:)),
+                            &NSString::from_str(""),
+                        )
+                    };
+                    item.setTag(tag);
+                    unsafe {
+                        item.setTarget(Some(&handler));
+                    }
+                    app_menu.insertItem_atIndex(&item, index as isize + 1);
+                }
+                app_menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 3);
             }
             app.setMainMenu(Some(&bar));
             if let Some(delegate) = app.delegate() {
@@ -263,6 +304,11 @@ mod macos {
 #[cfg(not(target_os = "macos"))]
 mod macos {
     pub fn install() {}
+    pub fn set_automatic_updates(_: bool) {}
+}
+/// Show whether launch update checks are on as the menu item's checkmark.
+pub fn set_automatic_updates(on: bool) {
+    macos::set_automatic_updates(on);
 }
 
 pub fn clipboard_text() -> Option<String> {

@@ -19,6 +19,10 @@ pub struct Settings {
     pub inbox_grouped: bool,
     pub archive_grouped: bool,
     pub window_position: Option<[f32; 2]>,
+    pub check_for_updates_on_launch: bool,
+    /// Unix seconds of the last completed launch check.
+    pub last_update_check: i64,
+    pub skipped_update: Option<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -36,11 +40,20 @@ impl Default for Settings {
             window_position: None,
             inbox_grouped: false,
             archive_grouped: false,
+            check_for_updates_on_launch: true,
+            last_update_check: 0,
+            skipped_update: None,
         }
     }
 }
 
 impl Settings {
+    /// A launch check is due when enabled and a day has passed since the last.
+    pub fn update_check_due(&self, now: i64) -> bool {
+        self.check_for_updates_on_launch
+            && !(0..crate::updater::CHECK_INTERVAL_SECONDS)
+                .contains(&now.saturating_sub(self.last_update_check))
+    }
     pub fn load(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
@@ -156,5 +169,28 @@ mod tests {
             assert_eq!(loaded.appearance, Appearance::Light);
             assert_eq!(loaded.reader_size, 24.);
         }
+    }
+    #[test]
+    fn update_checks_default_on_and_run_at_most_daily() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reader.json");
+        std::fs::write(&path, br#"{"reader_size": 24.0}"#).unwrap();
+        let mut loaded = Settings::load(&path);
+        assert!(loaded.check_for_updates_on_launch);
+        let day = crate::updater::CHECK_INTERVAL_SECONDS;
+        assert!(loaded.update_check_due(1_800_000_000));
+        loaded.last_update_check = 1_800_000_000;
+        assert!(!loaded.update_check_due(1_800_000_000 + day - 1));
+        assert!(loaded.update_check_due(1_800_000_000 + day));
+        // A clock set backwards does not suppress checks forever.
+        assert!(loaded.update_check_due(1_700_000_000));
+        loaded.check_for_updates_on_launch = false;
+        loaded.skipped_update = Some("0.4.0".into());
+        loaded.save(&path).unwrap();
+        let loaded = Settings::load(&path);
+        assert!(!loaded.check_for_updates_on_launch);
+        assert!(!loaded.update_check_due(i64::MAX));
+        assert_eq!(loaded.skipped_update.as_deref(), Some("0.4.0"));
+        assert_eq!(loaded.reader_size, 24.);
     }
 }

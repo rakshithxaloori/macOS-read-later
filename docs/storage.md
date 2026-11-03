@@ -23,9 +23,9 @@ reading state. Window and query settings live in the budgeted
 Measure the installed product without changing it:
 
 ```sh
-'/Applications/Read Later.app/Contents/MacOS/macos-read-later' storage-audit \
+'/Applications/Reader.app/Contents/MacOS/macos-read-later' storage-audit \
   --data-root '/path/to/your/library' \
-  --bundle '/Applications/Read Later.app'
+  --bundle '/Applications/Reader.app'
 ```
 
 This reports actual per-entry allocation, using the larger of file length and

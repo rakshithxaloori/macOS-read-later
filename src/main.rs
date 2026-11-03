@@ -1,6 +1,6 @@
 use clap::Parser;
 #[derive(Parser)]
-#[command(version, about = "Native local Read Later")]
+#[command(version, about = "Native local Reader")]
 struct Cli {
     #[arg(long)]
     data: Option<std::path::PathBuf>,
@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     }
     let settings = macos_read_later::settings::Settings::load(&dirs.settings());
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Read Later")
+        .with_title("Reader")
         .with_inner_size(settings.window_size)
         .with_min_inner_size([800., 600.])
         // One continuous surface: the panes run under a transparent title bar.
@@ -118,7 +118,7 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Read Later",
+        "Reader",
         options,
         Box::new(move |cc| {
             Ok(Box::new(macos_read_later::app::App::new(

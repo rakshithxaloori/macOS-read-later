@@ -24,6 +24,8 @@ impl AppDirs {
                 data: root,
             });
         }
+        // The app was renamed from Read Later to Reader. These legacy names
+        // locate every existing library, so they must never change.
         let dirs = directories::ProjectDirs::from("local", "ReadLater", "Read Later")
             .context("Cannot locate native application storage")?;
         let data = dirs.data_local_dir().to_owned();

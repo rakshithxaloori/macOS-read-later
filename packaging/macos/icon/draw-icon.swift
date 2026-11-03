@@ -1,4 +1,4 @@
-// Draws the 1024 px Read Later app icon: an ivory open book with a copper
+// Draws the 1024 px Reader app icon: an ivory open book with a copper
 // ribbon on deep green, following the macOS icon grid. Run via make-icon.sh.
 import AppKit
 

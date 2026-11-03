@@ -1,6 +1,6 @@
-# Read Later
+# Reader
 
-Read Later is a read-later app and an RSS reader in one native Mac app. It is
+Reader is a read-later app and an RSS reader in one native Mac app. It is
 written in Rust, runs entirely on your computer, and keeps everything it knows
 in a single SQLite file.
 
@@ -55,18 +55,18 @@ is egui and the article view uses AppKit.
 ## Download
 
 Get the latest version at [reader.rakshithxaloori.com](https://reader.rakshithxaloori.com)
-or from [Releases](https://github.com/rakshithxaloori/macOS-read-later/releases/latest).
-Open `Read-Later.dmg` and drag Read Later into Applications. It needs macOS 13
+or from [Releases](https://github.com/rakshithxaloori/macOS-reader/releases/latest).
+Open `Reader.dmg` and drag Reader into Applications. It needs macOS 13
 or later on an Apple silicon Mac.
 
 The app is not notarized by Apple yet, so the first time you open it macOS says
 it cannot check it for malicious software. Click **Done**, open **System
 Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to
-Read Later. You only need to do this once.
+Reader. You only need to do this once.
 
 ## Make it your own
 
-Read Later is meant to be forked. You can change anything about it by asking a
+Reader is meant to be forked. You can change anything about it by asking a
 coding agent such as [Claude Code](https://claude.com/claude-code) or
 [Codex](https://openai.com/codex), then build the result and use it as your
 own app. You do not need to know Rust.
@@ -82,8 +82,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 copy (replace `YOUR-NAME`):
 
 ```sh
-git clone https://github.com/YOUR-NAME/macOS-read-later.git
-cd macOS-read-later
+git clone https://github.com/YOUR-NAME/macOS-reader.git
+cd macOS-reader
 cargo run --release
 ```
 
@@ -104,7 +104,7 @@ check its work, and the rules that keep the app small and your data safe.
 ./packaging/macos/bundle.sh
 ```
 
-Open `.local/dist/Read Later.app`, or drag it into Applications to replace the
+Open `.local/dist/Reader.app`, or drag it into Applications to replace the
 downloaded version. Your library lives in `~/Library/Application Support`, so it
 carries over between builds. Pass `--data <dir>` to use another directory, or
 `--offline` to open the app without any network activity. To share your build
@@ -114,7 +114,7 @@ with someone else, `./scripts/dmg.sh` makes a disk image in `.local/releases`.
 changes:
 
 ```sh
-git remote add upstream https://github.com/rakshithxaloori/macOS-read-later.git
+git remote add upstream https://github.com/rakshithxaloori/macOS-reader.git
 git pull upstream main
 ```
 

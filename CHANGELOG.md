@@ -1,11 +1,38 @@
 # Changelog
 
-All notable changes to Read Later (formerly Reading List) are recorded here. Versions follow
+All notable changes to Reader (formerly Read Later and Reading List) are recorded here. Versions follow
 [Semantic Versioning](https://semver.org): a major version for changes that need
 a library conversion, a minor version for features and redesigns, and a patch
 version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
+
+## [0.3.3] - 2026-11-03
+
+### Added
+- "Check for Updates…" in the app menu, and a daily launch check that can be
+  turned off with "Check for Updates Automatically". When a newer release
+  exists, a banner offers Install and Relaunch, Later, or Skip This Version.
+  Install downloads the release's `Reader.dmg` (or `Read-Later.dmg` from
+  older releases), verifies the app inside, swaps the bundle after quitting
+  and relaunches. A copy that cannot replace itself opens the release page in
+  the browser instead.
+
+### Changed
+- The app is now called Reader. The bundle is `Reader.app` and the release
+  disk image is `Reader.dmg`. Updating from Read Later replaces
+  `Read Later.app` with `Reader.app` in the same folder. The bundle
+  identifier, library location, Keychain item and settings are unchanged, so
+  existing libraries open as before.
+- The repository is now `rakshithxaloori/macOS-reader`.
+
+### Known issues
+- The app is ad-hoc signed, so after each update macOS asks again before
+  Reader can read its WhatsApp key from the Keychain.
+- A Dock icon pinned to `Read Later.app` needs pinning again after the update
+  turns it into `Reader.app`.
+- An update briefly needs room for two copies of the app, which can take the
+  app and library above 100 MB until the old copy is removed.
 
 ## [0.3.2] - 2026-11-03
 

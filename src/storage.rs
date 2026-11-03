@@ -174,7 +174,7 @@ impl Reservation {
         let usage = self.storage.snapshot()?;
         ensure!(
             usage.total_bytes() < LIMIT_BYTES,
-            "Read Later reached its 100 MB storage limit"
+            "Reader reached its 100 MB storage limit"
         );
         Ok(())
     }

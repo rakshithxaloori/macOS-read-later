@@ -17,13 +17,13 @@ grep -q "^## \[$VERSION\]" CHANGELOG.md || fail "CHANGELOG.md has no ## [$VERSIO
 [ -z "$(git status --porcelain)" ] || fail 'Working tree has uncommitted changes'
 ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null || fail "Tag v$VERSION already exists"
 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} "$ROOT/scripts/verify.sh"
-git tag -a "v$VERSION" -m "Read Later $VERSION"
+git tag -a "v$VERSION" -m "Reader $VERSION"
 "$ROOT/packaging/macos/bundle.sh" --no-build
 OUT="$ROOT/.local/releases"
 mkdir -p "$OUT"
-ARCHIVE="$OUT/Read-Later-$VERSION.zip"
+ARCHIVE="$OUT/Reader-$VERSION.zip"
 rm -f "$ARCHIVE"
-/usr/bin/ditto -c -k --keepParent "$ROOT/.local/dist/Read Later.app" "$ARCHIVE"
+/usr/bin/ditto -c -k --keepParent "$ROOT/.local/dist/Reader.app" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" | tee "$ARCHIVE.sha256"
 # The downloadable disk image uses a portable bundle with no local library path.
 "$ROOT/scripts/dmg.sh" --no-build

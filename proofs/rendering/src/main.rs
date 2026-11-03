@@ -338,7 +338,7 @@ fn retained(output: &std::path::Path) -> Result<()> {
             }
         } else {
             let bytes = std::fs::read(record["file"].as_str().unwrap())?;
-            let viewer = PdfWindow::open(&bytes, "Read Later exact stored PDF verification")
+            let viewer = PdfWindow::open(&bytes, "Reader exact stored PDF verification")
                 .map_err(anyhow::Error::msg)?;
             if viewer.page_count() != record["pages"].as_u64().unwrap() as usize
                 || viewer.original_sha256 != record["sha256"].as_str().unwrap()

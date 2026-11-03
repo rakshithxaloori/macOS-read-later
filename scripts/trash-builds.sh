@@ -51,7 +51,7 @@ lock="$ROOT/.local/.storage-clean.lock"
 mkdir "$lock" 2>/dev/null || fail 'Another cleanup is running or its lock remains'
 trap 'rmdir "$lock"' EXIT
 trap 'exit 1' HUP INT TERM
-destination=$(mktemp -d "$TRASH/Read Later build cleanup.XXXXXXXX")
+destination=$(mktemp -d "$TRASH/Reader build cleanup.XXXXXXXX")
 receipt="$ROOT/.local/trash-builds-$(date -u +%Y%m%dT%H%M%SZ).txt"
 printf 'Trash destination: %s\nAllocated KiB: %s\n' "$destination" "$total" > "$receipt"
 for relative in $TARGETS; do
