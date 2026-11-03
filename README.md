@@ -52,28 +52,76 @@ It is local. There are no accounts, no servers, no telemetry, and no
 subscription. There is no web view or JavaScript runtime either; the interface
 is egui and the article view uses AppKit.
 
-## Build and run
+## Download
 
-You need macOS and Rust. The pinned toolchain in `rust-toolchain.toml` is
-installed automatically by rustup.
+Get the latest version at [reader.rakshithxaloori.com](https://reader.rakshithxaloori.com)
+or from [Releases](https://github.com/rakshithxaloori/macOS-read-later/releases/latest).
+Open `Read-Later.dmg` and drag Read Later into Applications. It needs macOS 13
+or later on an Apple silicon Mac.
+
+The app is not notarized by Apple yet, so the first time you open it macOS says
+it cannot check it for malicious software. Click **Done**, open **System
+Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to
+Read Later. You only need to do this once.
+
+## Make it your own
+
+Read Later is meant to be forked. You can change anything about it by asking a
+coding agent such as [Claude Code](https://claude.com/claude-code) or
+[Codex](https://openai.com/codex), then build the result and use it as your
+own app. You do not need to know Rust.
+
+**1. Install the tools.** You need Xcode's command line tools, Rust, and git.
 
 ```sh
-git clone https://github.com/rakshithxaloori/macOS-read-later.git
+xcode-select --install
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**2. Fork and clone.** Click **Fork** at the top of this page, then clone your
+copy (replace `YOUR-NAME`):
+
+```sh
+git clone https://github.com/YOUR-NAME/macOS-read-later.git
 cd macOS-read-later
 cargo run --release
 ```
 
-To build a signed `.app` bundle in `.local/dist`:
+The first build takes a few minutes. When the window opens, the app works.
+
+**3. Ask your agent for a change.** Start your agent in the folder (`claude`
+for Claude Code, `codex` for Codex) and describe what you want, for example:
+
+> Read docs/hacking.md first. Then add a "Read time" sort option to the Inbox
+> and run ./scripts/verify.sh when you are done.
+
+[docs/hacking.md](docs/hacking.md) tells the agent where things are, how to
+check its work, and the rules that keep the app small and your data safe.
+
+**4. Build your app.** When you like the change:
 
 ```sh
 ./packaging/macos/bundle.sh
 ```
 
-Then open `.local/dist/Read Later.app`, or drag it into Applications. Your
-library is created in `~/Library/Application Support`. Pass `--data <dir>` to
-use another directory, or `--offline` to open it without any network activity.
+Open `.local/dist/Read Later.app`, or drag it into Applications to replace the
+downloaded version. Your library lives in `~/Library/Application Support`, so it
+carries over between builds. Pass `--data <dir>` to use another directory, or
+`--offline` to open the app without any network activity. To share your build
+with someone else, `./scripts/dmg.sh` makes a disk image in `.local/releases`.
 
-To run formatting, Clippy, and the tests:
+**5. Keep up with this repository.** To pull in new releases while keeping your
+changes:
+
+```sh
+git remote add upstream https://github.com/rakshithxaloori/macOS-read-later.git
+git pull upstream main
+```
+
+If there is a conflict, ask your agent to resolve it and run
+`./scripts/verify.sh` again.
+
+To run formatting, Clippy, and the tests yourself:
 
 ```sh
 ./scripts/verify.sh
@@ -84,6 +132,7 @@ The tests use synthetic data. They never contact publishers or WhatsApp.
 ## More
 
 - [User guide](docs/guide.md) covers each screen in detail.
+- [Changing the app](docs/hacking.md) is the map for you and your coding agent.
 - [Architecture](docs/architecture.md) explains how the pieces fit together.
 - [Storage](docs/storage.md) explains the 100 MB budget and the cache.
 - [CHANGELOG.md](CHANGELOG.md) lists what changed in each release.

@@ -7,6 +7,19 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-03
+
+### Added
+- `scripts/dmg.sh` builds a downloadable `Read-Later.dmg` with a portable app
+  that opens its own library in Application Support.
+- `bundle.sh --portable` builds that shareable bundle.
+- README sections on downloading the app and on forking it with a coding agent,
+  and `docs/hacking.md`, a map of the code for agents.
+
+### Changed
+- `bundle.sh` points the app at `.local/native` only when that library exists,
+  so a fresh clone or fork uses Application Support as documented.
+
 ## [0.3.1] - 2026-10-30
 
 ### Fixed

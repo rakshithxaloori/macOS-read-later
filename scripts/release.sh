@@ -25,4 +25,6 @@ ARCHIVE="$OUT/Read-Later-$VERSION.zip"
 rm -f "$ARCHIVE"
 /usr/bin/ditto -c -k --keepParent "$ROOT/.local/dist/Read Later.app" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" | tee "$ARCHIVE.sha256"
+# The downloadable disk image uses a portable bundle with no local library path.
+"$ROOT/scripts/dmg.sh" --no-build
 printf 'Release v%s is tagged and archived. Install only after approval.\n' "$VERSION"
