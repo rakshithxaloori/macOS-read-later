@@ -7,14 +7,24 @@ PREVIOUS="$ROOT/.local/dist/.Read Later.previous.app"
 PROFILE=release
 BUILD=yes
 STAGE=no
+PORTABLE=no
 for option in "$@"; do
   case "$option" in
     --no-build) BUILD=no ;;
     --debug) PROFILE=debug ;;
     --stage) STAGE=yes ;;
+    --portable) PORTABLE=yes ;;
     *) printf 'Unknown bundle option: %s\n' "$option" >&2; exit 1 ;;
   esac
 done
+if [ "$PORTABLE" = yes ]; then
+  # A portable bundle is what other people download: it never points at this
+  # checkout's library, so it opens its own Application Support library.
+  mkdir -p "$ROOT/.local/dist/portable"
+  DESTINATION="$ROOT/.local/dist/portable/Read Later.app"
+  APP="$ROOT/.local/dist/portable/.Read Later.build.app"
+  PREVIOUS="$ROOT/.local/dist/portable/.Read Later.previous.app"
+fi
 if [ "$STAGE" = yes ]; then
   DESTINATION="$ROOT/.local/dist/Read Later.lean.app"
   if [ -e "$DESTINATION" ]; then
@@ -58,9 +68,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
-# Inert path configuration makes this local handoff open the verified library.
-# Explicit --data always overrides it; no source path is ever writable runtime data.
-printf '%s\n' "$ROOT/.local/native" > "$APP/Contents/Resources/default-data-directory"
+# Inert path configuration makes this local handoff open the library kept in
+# this checkout's .local/native, when one exists. A fresh clone or fork has none,
+# so its app uses Application Support. Explicit --data always overrides it.
+if [ "$PORTABLE" = no ] && [ -d "$ROOT/.local/native" ]; then
+  printf '%s\n' "$ROOT/.local/native" > "$APP/Contents/Resources/default-data-directory"
+fi
 /usr/bin/plutil -lint "$APP/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict "$APP"
