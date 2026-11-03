@@ -55,7 +55,7 @@ fn xml(s: &str) -> String {
 }
 pub fn opml(c: &Connection) -> Result<String> {
     let feeds = crate::library::feeds(c)?;
-    let mut out="<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\"><head><title>Read Later subscriptions</title></head><body>".to_owned();
+    let mut out="<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\"><head><title>Reader subscriptions</title></head><body>".to_owned();
     for f in feeds {
         out.push_str(&format!(
             "<outline type=\"rss\" text=\"{}\" title=\"{}\" xmlUrl=\"{}\"/>\n",

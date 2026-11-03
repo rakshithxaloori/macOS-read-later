@@ -17,6 +17,7 @@ pub mod rich_content;
 pub mod settings;
 pub mod storage;
 pub mod ui;
+pub mod updater;
 pub mod whatsapp;
 
 pub mod instance;

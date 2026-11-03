@@ -21,6 +21,17 @@ enum Dialog {
     DeleteMatching { query: Query, expected: u32 },
     Details { title: String, message: String },
 }
+/// Where an update stands. A silent launch check stays `Idle` until it finds one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateState {
+    Idle,
+    Checking,
+    Available(crate::updater::Version),
+    Installing {
+        version: crate::updater::Version,
+        step: String,
+    },
+}
 /// How soon a reload that found the database queue full is tried again.
 const RELOAD_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -112,6 +123,9 @@ pub struct App {
     magazine_state: ui::magazine::State,
     production: Option<crate::magazine::Worker>,
     production_events: std::sync::mpsc::Receiver<()>,
+    update: UpdateState,
+    update_tx: crate::updater::Sender,
+    update_events: std::sync::mpsc::Receiver<crate::updater::Event>,
 }
 impl App {
     pub fn new(
@@ -177,6 +191,7 @@ impl App {
                 wake,
             ))
         };
+        let (update_tx, update_events) = std::sync::mpsc::channel();
         let mut app = Self {
             dirs,
             settings,
@@ -232,7 +247,18 @@ impl App {
             magazine_state: Default::default(),
             production,
             production_events,
+            update: UpdateState::Idle,
+            update_tx,
+            update_events,
         };
+        crate::native_menu::set_automatic_updates(app.settings.check_for_updates_on_launch);
+        if !app.offline
+            && app
+                .settings
+                .update_check_due(chrono::Utc::now().timestamp())
+        {
+            app.check_for_updates(false);
+        }
         app.refresh();
         app
     }
@@ -333,6 +359,109 @@ impl App {
             Err(TrySendError::Disconnected(_)) => {
                 self.error = "The library database stopped responding.".into();
                 true
+            }
+        }
+    }
+    fn check_for_updates(&mut self, manual: bool) {
+        if matches!(
+            self.update,
+            UpdateState::Checking | UpdateState::Installing { .. }
+        ) {
+            return;
+        }
+        if self.offline {
+            self.apply_details(
+                "Updates are off while offline",
+                "Reader was launched with --offline, so it does not contact GitHub.",
+            );
+            return;
+        }
+        if manual {
+            self.update = UpdateState::Checking;
+        }
+        let repaint = self.repaint.clone();
+        crate::updater::check(&self.runtime, manual, self.update_tx.clone(), move || {
+            repaint.request_repaint()
+        });
+    }
+    fn apply_details(&mut self, title: &str, message: &str) {
+        if let Some(view) = &self.native_reader {
+            view.focus_controls();
+        }
+        self.dialog = Some(Dialog::Details {
+            title: title.into(),
+            message: message.into(),
+        });
+        self.repaint.request_repaint();
+    }
+    fn update_events(&mut self, ctx: &egui::Context) {
+        use crate::updater::{Event as U, Version};
+        while let Ok(event) = self.update_events.try_recv() {
+            match event {
+                U::Checked { manual, result } => {
+                    if self.update == UpdateState::Checking {
+                        self.update = UpdateState::Idle;
+                    }
+                    let latest = match result {
+                        Ok(latest) => latest,
+                        Err(error) => {
+                            // A failed launch check stays silent and is retried next launch.
+                            if manual {
+                                self.apply_details("Could not check for updates", &error);
+                            }
+                            continue;
+                        }
+                    };
+                    if !manual {
+                        self.settings.last_update_check = chrono::Utc::now().timestamp();
+                        let _ = self.settings.save(&self.dirs.settings());
+                    }
+                    if self.update != UpdateState::Idle {
+                        continue;
+                    }
+                    match crate::updater::newer(latest, Version::current()) {
+                        Some(version)
+                            if manual
+                                || self.settings.skipped_update.as_deref()
+                                    != Some(&version.to_string()) =>
+                        {
+                            self.update = UpdateState::Available(version)
+                        }
+                        Some(_) => {}
+                        None if manual => self.apply_details(
+                            "Reader is up to date",
+                            &format!(
+                                "Version {} is the newest release.",
+                                env!("CARGO_PKG_VERSION")
+                            ),
+                        ),
+                        None => {}
+                    }
+                }
+                U::Progress(message) => {
+                    if let UpdateState::Installing { step, .. } = &mut self.update {
+                        *step = message;
+                    }
+                }
+                U::Staged(install) => match crate::updater::spawn_swap(&install) {
+                    Ok(()) => self.apply(Action::Quit, ctx),
+                    Err(error) => {
+                        self.update = UpdateState::Available(install.version);
+                        self.error = format!("The update could not be installed: {error:#}");
+                    }
+                },
+                U::OpenedDownload(version) => {
+                    self.update = UpdateState::Idle;
+                    self.notice = format!(
+                        "Reader {version} is on its release page in your browser. This copy cannot replace itself where it is, so download Reader.dmg and drag the app to Applications."
+                    );
+                }
+                U::Failed(error) => {
+                    if let UpdateState::Installing { version, .. } = self.update {
+                        self.update = UpdateState::Available(version);
+                    }
+                    self.error = format!("The update could not be installed: {error}");
+                }
             }
         }
     }
@@ -597,7 +726,7 @@ impl App {
                     self.reload.selected = true;
                 }
                 Event::Pdf { id, title, bytes } => {
-                    match PdfWindow::open(&bytes, &format!("{title} · Read Later")) {
+                    match PdfWindow::open(&bytes, &format!("{title} · Reader")) {
                         Ok(p) => {
                             p.set_appearance(self.settings.appearance);
                             if self
@@ -634,6 +763,7 @@ impl App {
                 }
             }
         }
+        self.update_events(ctx);
         self.flush_reload();
     }
     fn begin_transfer(
@@ -733,7 +863,7 @@ impl App {
                     return;
                 }
                 if let Some(path) = rfd::FileDialog::new()
-                    .set_file_name("macOS-read-later.zip")
+                    .set_file_name("macOS-reader.zip")
                     .add_filter("ZIP", &["zip"])
                     .save_file()
                 {
@@ -1049,6 +1179,21 @@ impl eframe::App for App {
                     ctx.memory_mut(|m| m.request_focus(egui::Id::new("library-search")));
                     continue;
                 }
+                M::CheckForUpdates => {
+                    crate::native_menu::activate();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    self.check_for_updates(true);
+                    continue;
+                }
+                M::ToggleAutomaticUpdates => {
+                    let on = !self.settings.check_for_updates_on_launch;
+                    self.settings.check_for_updates_on_launch = on;
+                    crate::native_menu::set_automatic_updates(on);
+                    if let Err(error) = self.settings.save(&self.dirs.settings()) {
+                        self.error = error.to_string();
+                    }
+                    continue;
+                }
                 M::DisplayPreferencesChanged => {
                     ctx.all_styles_mut(|style| {
                         style.animation_time = if crate::native_menu::reduce_motion() {
@@ -1167,6 +1312,48 @@ impl eframe::App for App {
         let mut font_picker_rect = None;
         let mut actions = vec![];
         let mut magazine_actions = vec![];
+        let update_version = match &self.update {
+            UpdateState::Available(v) | UpdateState::Installing { version: v, .. } => {
+                Some(v.to_string())
+            }
+            _ => None,
+        };
+        let banner = match (&self.update, update_version.as_deref()) {
+            (UpdateState::Checking, _) => Some(ui::update::Banner::Checking),
+            (UpdateState::Available(_), Some(v)) => Some(ui::update::Banner::Available(v)),
+            (UpdateState::Installing { step, .. }, Some(v)) => {
+                Some(ui::update::Banner::Installing { version: v, step })
+            }
+            _ => None,
+        };
+        if let Some(banner) = banner {
+            match (ui::update::draw(ui, banner), &self.update) {
+                (Some(ui::update::Choice::Install), UpdateState::Available(version)) => {
+                    let version = *version;
+                    self.update = UpdateState::Installing {
+                        version,
+                        step: "Preparing".into(),
+                    };
+                    let repaint = self.repaint.clone();
+                    crate::updater::install(
+                        &self.runtime,
+                        version,
+                        self.dirs.data.clone(),
+                        self.update_tx.clone(),
+                        move || repaint.request_repaint(),
+                    );
+                }
+                (Some(ui::update::Choice::Later), _) => self.update = UpdateState::Idle,
+                (Some(ui::update::Choice::Skip), UpdateState::Available(version)) => {
+                    self.settings.skipped_update = Some(version.to_string());
+                    self.update = UpdateState::Idle;
+                    if let Err(error) = self.settings.save(&self.dirs.settings()) {
+                        self.error = error.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
         if !self.error.is_empty() || !self.notice.is_empty() {
             // Reserve real layout space so native reader children never cover
             // feedback, and feedback never hides the article or takes focus.
@@ -1401,7 +1588,7 @@ impl eframe::App for App {
                         .take(100)
                         .collect();
                     let filename = if filename.trim().is_empty() {
-                        "Read Later edition"
+                        "Reader edition"
                     } else {
                         filename.trim()
                     };

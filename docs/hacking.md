@@ -1,4 +1,4 @@
-# Changing Read Later with a coding agent
+# Changing Reader with a coding agent
 
 This page is for you and for the coding agent you work with (Claude Code,
 Codex, Cursor, or anything else that can read files and run commands). Ask the
@@ -6,7 +6,7 @@ agent to read it before making changes.
 
 ## The one-minute map
 
-Read Later is a single Rust binary. The interface is egui; article text and
+Reader is a single Rust binary. The interface is egui; article text and
 PDFs are drawn with AppKit and PDFKit.
 
 | Area | Where |
@@ -30,8 +30,8 @@ PDFs are drawn with AppKit and PDFKit.
 cargo run --release                  # run from source
 cargo run --release -- --offline     # run without any network activity
 ./scripts/verify.sh                  # formatting, Clippy, all tests, release build
-./packaging/macos/bundle.sh          # build .local/dist/Read Later.app
-./scripts/dmg.sh                     # build a shareable .local/releases/Read-Later-X.Y.Z.dmg
+./packaging/macos/bundle.sh          # build .local/dist/Reader.app
+./scripts/dmg.sh                     # build a shareable .local/releases/Reader-X.Y.Z.dmg
 ```
 
 The first build downloads the pinned Rust toolchain and compiles SQLCipher, so

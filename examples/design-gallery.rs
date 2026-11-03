@@ -165,7 +165,7 @@ impl eframe::App for Gallery {
 fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Read Later design gallery")
+            .with_title("Reader design gallery")
             .with_inner_size(vec2(1100., 800.))
             .with_min_inner_size(vec2(700., 550.)),
         persist_window: false,
@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Read Later design gallery",
+        "Reader design gallery",
         options,
         Box::new(|cc| Ok(Box::new(Gallery::new(cc)))),
     )

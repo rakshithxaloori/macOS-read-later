@@ -200,7 +200,7 @@ fn reopened_lean_connections_reclaim_payload_pages_and_short_wal() {
 fn read_only_audit_reports_the_installed_bundle_and_every_managed_file() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("data");
-    let bundle = directory.path().join("Read Later.app");
+    let bundle = directory.path().join("Reader.app");
     fs::create_dir(&root).unwrap();
     fs::create_dir(&bundle).unwrap();
     fs::create_dir(root.join("article-cache")).unwrap();

@@ -4,6 +4,7 @@ pub mod library;
 pub mod rail;
 pub mod reader;
 pub mod secondary;
+pub mod update;
 
 use crate::{backend::Command, domain::*};
 

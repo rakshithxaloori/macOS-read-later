@@ -1,6 +1,6 @@
-# Read Later user guide
+# Reader user guide
 
-Read Later is a local, single-user macOS reader written in Rust. It uses
+Reader is a local, single-user macOS reader written in Rust. It uses
 egui/eframe, Tokio, SQLite, AppKit text views, and PDFKit. Its runtime contains
 no website, JavaScript, Node, Chromium, WebView, or Poppler helper.
 
@@ -15,7 +15,7 @@ See [CHANGELOG.md](../CHANGELOG.md) for what changed in each version.
 ## Open the reader
 
 Build the app with `./packaging/macos/bundle.sh` and open
-`.local/dist/Read Later.app`, or copy it to `/Applications` first.
+`.local/dist/Reader.app`, or copy it to `/Applications` first.
 
 By default the library lives in the app's macOS Application Support directory,
 with `config/` and `cache/` inside it. To use a different library, pass its
@@ -23,7 +23,7 @@ directory explicitly. `--data` takes precedence over the default. Add
 `--offline` to inspect a library with network intake disabled:
 
 ```sh
-'.local/dist/Read Later.app/Contents/MacOS/macos-read-later' --data /absolute/path/to/library --offline
+'.local/dist/Reader.app/Contents/MacOS/macos-read-later' --data /absolute/path/to/library --offline
 ```
 
 ## Use your library
@@ -49,7 +49,7 @@ captures remain available for crash replay. Reader images are downloaded by its
 background loader and passed to native rendering as private bytes.
 
 Closing the reader window keeps intake running. Open the app again or choose
-**Read Later → Show Read Later** to reopen it. Choose **Quit Read Later**
+**Reader → Show Reader** to reopen it. Choose **Quit Reader**
 or Command-Q to stop workers and exit. `--offline` disables network intake.
 
 To pair WhatsApp, launch without `--offline`, open **WhatsApp**, enter your expected phone number, and scan the fresh native QR.
@@ -121,9 +121,9 @@ Developer toolchains and Cargo targets are outside this product budget.
 Measure the installed product without changing it:
 
 ```sh
-'/Applications/Read Later.app/Contents/MacOS/macos-read-later' storage-audit \
+'/Applications/Reader.app/Contents/MacOS/macos-read-later' storage-audit \
   --data-root '/path/to/your/library' \
-  --bundle '/Applications/Read Later.app'
+  --bundle '/Applications/Reader.app'
 ```
 
 The report counts allocated files, including the database WAL and receipts, and
@@ -137,11 +137,11 @@ fails at or above the limit. Cache and work can change the total during use.
    heading and set `version = "X.Y.Z"` in `Cargo.toml`. Commit both.
 2. Run `scripts/release.sh X.Y.Z`. It runs the full verifier, tags `vX.Y.Z`,
    builds the signed bundle in `.local/dist`, and writes
-   `.local/releases/Read-Later-X.Y.Z.zip` with its SHA-256.
+   `.local/releases/Reader-X.Y.Z.zip` with its SHA-256.
 3. Install into Applications only after reviewing that build.
 
 The bundle's short version is the Cargo version and its build number is the
-commit count, both visible in **Read Later → About Read Later**.
+commit count, both visible in **Reader → About Reader**.
 
 ## Build and verify
 

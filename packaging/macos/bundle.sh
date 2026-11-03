@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-DESTINATION="$ROOT/.local/dist/Read Later.app"
-APP="$ROOT/.local/dist/.Read Later.build.app"
-PREVIOUS="$ROOT/.local/dist/.Read Later.previous.app"
+DESTINATION="$ROOT/.local/dist/Reader.app"
+APP="$ROOT/.local/dist/.Reader.build.app"
+PREVIOUS="$ROOT/.local/dist/.Reader.previous.app"
 PROFILE=release
 BUILD=yes
 STAGE=no
@@ -21,12 +21,12 @@ if [ "$PORTABLE" = yes ]; then
   # A portable bundle is what other people download: it never points at this
   # checkout's library, so it opens its own Application Support library.
   mkdir -p "$ROOT/.local/dist/portable"
-  DESTINATION="$ROOT/.local/dist/portable/Read Later.app"
-  APP="$ROOT/.local/dist/portable/.Read Later.build.app"
-  PREVIOUS="$ROOT/.local/dist/portable/.Read Later.previous.app"
+  DESTINATION="$ROOT/.local/dist/portable/Reader.app"
+  APP="$ROOT/.local/dist/portable/.Reader.build.app"
+  PREVIOUS="$ROOT/.local/dist/portable/.Reader.previous.app"
 fi
 if [ "$STAGE" = yes ]; then
-  DESTINATION="$ROOT/.local/dist/Read Later.lean.app"
+  DESTINATION="$ROOT/.local/dist/Reader.lean.app"
   if [ -e "$DESTINATION" ]; then
     printf 'Staged bundle already exists: %s\n' "$DESTINATION" >&2
     exit 1
@@ -50,12 +50,14 @@ cp "$ROOT/target/$PROFILE/macos-read-later" "$APP/Contents/MacOS/macos-read-late
 chmod 755 "$APP/Contents/MacOS/macos-read-later"
 # The bundle icon is what Finder and the Dock show while the app is not running.
 cp "$ROOT/packaging/macos/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# The app is named Reader, but CFBundleIdentifier keeps its original value:
+# existing installs, Keychain access and macOS permissions are tied to it.
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Read Later</string>
-<key>CFBundleDisplayName</key><string>Read Later</string>
+<key>CFBundleName</key><string>Reader</string>
+<key>CFBundleDisplayName</key><string>Reader</string>
 <key>CFBundleIdentifier</key><string>org.reading-list.native</string>
 <key>CFBundleExecutable</key><string>macos-read-later</string>
 <key>CFBundlePackageType</key><string>APPL</string>

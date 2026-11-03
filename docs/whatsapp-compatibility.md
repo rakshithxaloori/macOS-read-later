@@ -31,7 +31,7 @@ macOS `SecRandom`, saved as a native Keychain generic password under this app's
 service identity, and derived with HKDF-SHA256 and the storage owner's UUID.
 The resulting key opens an independent SQLCipher database. Its WAL and all
 protocol tables are encrypted, including device keys and pending inbound
-buffers. Plain Read Later content remains an ordinary unkeyed SQLite database.
+buffers. Plain Reader content remains an ordinary unkeyed SQLite database.
 No environment file, external key or Baileys credential is read.
 
 The released storage crate supplies a per-connection hook before its own

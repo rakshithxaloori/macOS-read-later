@@ -167,7 +167,7 @@ impl NativeArticleWindow {
             ));
             window.setReleasedWhenClosed(false);
             window.setTitle(&NSString::from_str(
-                "Read Later • Native rich content proof",
+                "Reader • Native rich content proof",
             ));
             window.setContentView(Some(&scroll));
             window.center();
