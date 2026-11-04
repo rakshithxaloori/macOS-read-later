@@ -19,14 +19,15 @@ obsolete work. Archive/delete increments a cache generation and purges owned
 payloads, preventing late writes from recreating an archived copy. An archived
 article can remain in memory for the current view.
 
-`storage.rs` coordinates cross-process disk reservations with locked claim files.
-It counts the installed bundle and every managed file, including filesystem
-allocation, WAL, credentials, settings, receipts, and temporary work. The ceiling
-is strictly below 100,000,000 bytes with 2 MB safety headroom. The 20 MB article
-cache uses atomic publication, seven-day expiry, least-recent-use eviction, and
+`storage.rs` records cross-process in-flight work with locked claim files and
+reports the installed bundle and every managed file, including filesystem
+allocation, WAL, credentials, settings, receipts, and temporary work. The library
+has no size limit; the only budget is the app bundle, which must stay below
+50,000,000 bytes and is checked when it is packaged. The 20 MB article cache
+uses atomic publication, seven-day expiry, least-recent-use eviction, and
 orphan/claim recovery. Durable metadata and finalized PDFs are never auto-evicted.
-SQLite page limits, short WAL checkpoints, and incremental reclamation supplement
-reservations. Developer Cargo/toolchain directories are separate from this budget.
+SQLite page limits, short WAL checkpoints, and incremental reclamation keep the
+database compact.
 
 RSS intake persists only bounded unprocessed XML, atomically records arrivals and
 removes successfully processed captures, and keeps compact hash/HTTP validators.

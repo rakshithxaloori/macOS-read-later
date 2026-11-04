@@ -27,8 +27,7 @@ Theme Studio preserves Signal & Paper, Literary Review, Swiss Journal, and Moder
 Review; Georgia, Baskerville, Avenir, and Helvetica; Letter, A4, and A5; columns,
 typography, colors, and print profiles. New-issue bounds remain 40 articles,
 60,000 words, 20 MB snapshot text, 50 MB media, 50 MB PDF, 400 pages, and five
-minutes of rendering. The global installed-app/data budget is stricter: these
-individual maxima are not simultaneous allowances. The Canva profile requires
+minutes of rendering. The library itself has no size limit. The Canva profile requires
 Letter, two columns, and 24–204 even pages. Imported historical viewers are not
 subjected retroactively to new-draft bounds.
 
@@ -48,10 +47,10 @@ fingerprints or changed repeat fulfilment, and stores originals separately from
 print derivatives with their hashes and provenance. Cover overflow is an error.
 
 A dedicated worker claims explicitly queued jobs with random-token leases and
-heartbeats. It evicts disposable reader cache before reserving serialized input,
-intermediate/final PDFs, verification output, and SQLite/WAL publication space
-under the same 100,000,000-byte ceiling. If the complete edition cannot fit, it
-fails with a storage error. No prose or required images are discarded to fit.
+heartbeats. It records serialized input, intermediate/final PDFs, verification
+output, and SQLite/WAL publication space as in-flight work, with each PDF held to
+the 50 MB new-issue bound. The library has no size limit. No prose or required
+images are discarded to fit.
 
 The same Rust executable runs `render-magazine` in an isolated main-thread
 AppKit/PDFKit child using production-owned media and no network fetching. Native
@@ -70,7 +69,7 @@ production payloads before freezing the edition. Article read/archive state stay
 unchanged. Drafts keep their frozen inputs until finalized or explicitly deleted.
 
 New finalized PDFs consume durable space. The app never automatically evicts
-them; unlimited editions cannot fit a fixed budget. For a future native finalized
+them. For a future native finalized
 edition, **Export PDF and free local space** shows an explicit confirmation, then
 opens a native Save PDF dialog. Cancel leaves its PDF intact. The export must be
 outside managed library storage and the app bundle. Existing files are never

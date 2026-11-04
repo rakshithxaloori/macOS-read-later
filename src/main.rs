@@ -88,10 +88,6 @@ fn main() -> anyhow::Result<()> {
                 let bytes = macos_read_later::storage::measured_bytes(bundle)?;
                 storage.set_bundle_bytes(bytes)?;
             }
-            anyhow::ensure!(
-                storage.snapshot()?.total_bytes() < macos_read_later::storage::LIMIT_BYTES,
-                "The app and library exceed the 100 MB storage limit"
-            );
         }
     }
     let settings = macos_read_later::settings::Settings::load(&dirs.settings());

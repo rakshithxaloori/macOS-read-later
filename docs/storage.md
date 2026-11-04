@@ -1,22 +1,24 @@
 # Storage
 
-## The 100 MB budget
+## App bundle under 50 MB, library unbounded
 
-The installed app plus everything it manages stays strictly below
-100,000,000 bytes. That includes SQLite and its WAL, settings, credentials,
-receipts, PDFs, publication icons, the article cache, downloads, and temporary
-production files. Developer toolchains and Cargo build output are not counted.
+The only size budget is the app itself: `Reader.app` must stay strictly below
+50,000,000 bytes. `packaging/macos/bundle.sh` measures every bundle it builds
+and fails above the limit, and `scripts/dmg.sh` reports the disk image's size.
 
-Writers reserve space before persistent writes. When space is short, eviction
-removes disposable cache first. It never removes article metadata or finalized
-magazine PDFs. Work that cannot fit completely is refused with an explanation,
-and its inputs stay retryable.
+The library (SQLite and its WAL, settings, credentials, receipts, PDFs,
+publication icons, WhatsApp state and the article cache) has no size limit.
+Saves, imports, feed intake, magazine production and updates never fail because
+the library is large. Writers still record in-flight work as reservations, and
+each job is held to the size it declared, but nothing is refused for lack of
+budget. Article metadata and finalized magazine PDFs are never evicted.
+Updates download into the system temporary folder and only need free disk
+space.
 
 Full article bodies, raster images, and publication icons share a 20,000,000-byte
 cache with seven-day expiry and least-recent-use eviction. Expired or missing
 copies are fetched again on demand. They never change article quality or
-reading state. Window and query settings live in the budgeted
-`config/reader.json`.
+reading state. Window and query settings live in `config/reader.json`.
 
 ## Measure an installed app
 
@@ -29,8 +31,8 @@ Measure the installed product without changing it:
 ```
 
 This reports actual per-entry allocation, using the larger of file length and
-allocated blocks. It rejects symlinks and exits unsuccessfully at or above the
-limit.
+allocated blocks. It rejects symlinks and exits unsuccessfully when the app
+bundle is not below 50 MB. Library size is reported, never enforced.
 
 ## Move build output to Trash
 

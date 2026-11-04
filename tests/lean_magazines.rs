@@ -111,16 +111,21 @@ fn production_owns_images_independently_of_archive_and_cache_eviction() {
     );
 }
 #[test]
-fn oversized_owned_snapshots_are_refused_before_writing() {
+fn large_owned_snapshots_save_without_a_library_cap() {
     let (_directory, mut c, id) = fixture();
     let mut copy = prepared(id.clone());
-    copy.media.insert("huge".into(), vec![0; 35_000_000]);
-    let error = save_prepared_draft(&mut c, &input(id), &[copy]).unwrap_err();
-    assert!(error.to_string().contains("cannot fit") || error.to_string().contains("budget"));
+    // About 35 MB of images was refused by the retired 100 MB library budget.
+    for n in 0..8 {
+        // A valid PNG padded to 4.4 MB, under the 5 MB per-image bound.
+        let mut image = png();
+        image.resize(4_400_000, n as u8);
+        copy.media.insert(format!("large-{n}"), image);
+    }
+    save_prepared_draft(&mut c, &input(id), &[copy]).unwrap();
     assert_eq!(
         c.query_row("SELECT count(*) FROM magazines", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        0
+        1
     );
 }
 

@@ -1,7 +1,7 @@
 use macos_read_later::{
     db_compat,
     domain::CopyStatus,
-    storage::{CACHE_BYTES, CachedArticle, CachedMedia, LIMIT_BYTES, Storage},
+    storage::{CACHE_BYTES, CachedArticle, CachedMedia, Storage},
 };
 use std::fs;
 
@@ -27,7 +27,8 @@ fn every_owner_shares_live_reservations_and_recovers_crashed_claims() {
     let claim = one.reserve("production", 40_000_000).unwrap();
     let two = Storage::new(directory.path(), 45_000_000).unwrap();
     assert_eq!(two.snapshot().unwrap().reserved_bytes, 40_000_000);
-    assert!(two.require(14_000_000).is_err());
+    // Reservations record work; they never refuse it for library size.
+    drop(two.require(140_000_000).unwrap());
     assert!(claim.check(40_000_001).is_err());
     drop(claim);
     assert_eq!(two.snapshot().unwrap().reserved_bytes, 0);
@@ -76,7 +77,7 @@ fn archive_invalidation_fences_a_late_download_across_owners() {
 }
 
 #[test]
-fn cache_is_bounded_and_quota_reclaims_it_before_durable_work() {
+fn cache_is_bounded_by_its_own_lru() {
     let directory = tempfile::tempdir().unwrap();
     let storage = Storage::new(directory.path(), 45_000_000).unwrap();
     for n in 0..6 {
@@ -89,10 +90,6 @@ fn cache_is_bounded_and_quota_reclaims_it_before_durable_work() {
     }
     assert!(storage.cache_get("a0").unwrap().is_none());
     assert!(storage.cache_get("a5").unwrap().is_some());
-    let claim = storage.require(45_000_000).unwrap();
-    assert!(storage.snapshot().unwrap().cache_bytes < 10_000_000);
-    assert!(storage.snapshot().unwrap().total_bytes() < LIMIT_BYTES);
-    claim.finish().unwrap();
 }
 
 #[test]
@@ -118,7 +115,7 @@ fn expiry_and_interrupted_cache_writes_are_reclaimed_at_restart() {
 }
 
 #[test]
-fn quotas_include_database_wal_work_and_actual_bundle_bytes() {
+fn usage_includes_database_wal_work_and_actual_bundle_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let storage = Storage::new(directory.path(), 40_000_000).unwrap();
     let baseline = storage.snapshot().unwrap().managed_bytes;
@@ -133,7 +130,7 @@ fn quotas_include_database_wal_work_and_actual_bundle_bytes() {
     assert!(storage.snapshot().unwrap().managed_bytes >= baseline + 40_000);
     storage.set_bundle_bytes(50_000_000).unwrap();
     assert_eq!(storage.snapshot().unwrap().bundle_bytes, 50_000_000);
-    assert!(storage.require(50_000_000).is_err());
+    storage.require(60_000_000).unwrap().finish().unwrap();
 }
 
 #[test]
@@ -188,11 +185,11 @@ fn reopened_lean_connections_reclaim_payload_pages_and_short_wal() {
             .unwrap(),
         16
     );
+    // The library has no size limit: SQLite keeps its default page ceiling.
     assert!(
         c.query_row("PRAGMA max_page_count", [], |r| r.get::<_, i64>(0))
             .unwrap()
-            * 4096
-            <= 26_500_000
+            >= 1_000_000_000
     );
 }
 
@@ -218,7 +215,8 @@ fn read_only_audit_reports_the_installed_bundle_and_every_managed_file() {
         report.total_bytes,
         report.managed_bytes + report.bundle_bytes
     );
-    assert!(report.below_limit);
+    assert!(report.bundle_below_limit);
+    assert_eq!(report.bundle_limit_bytes, 50_000_000);
     assert!(!root.join("storage-policy.json").exists());
     assert!(macos_read_later::storage::audit(&root, &root).is_err());
 }

@@ -136,7 +136,6 @@ pub async fn encrypted_store(path: &Path, master: &[u8; 32], owner: &str) -> Res
         diesel::sql_query("SELECT count(*) FROM sqlite_master").execute(connection)?;
         if budget_guard.is_some() {
             for pragma in [
-                "PRAGMA max_page_count=1024",
                 "PRAGMA wal_autocheckpoint=64",
                 "PRAGMA journal_size_limit=1048576",
             ] {

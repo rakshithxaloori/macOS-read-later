@@ -1,4 +1,4 @@
-//! Publication icons share the disposable reader cache and its global budget.
+//! Publication icons share the disposable reader cache and its LRU bound.
 use crate::{
     backend::Event,
     domain::{Article, CopyStatus},
@@ -333,23 +333,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn icon_fetch_can_display_without_retaining_bytes_when_global_quota_is_full() {
-        let directory = tempfile::tempdir().unwrap();
-        let storage = Storage::new(directory.path(), 97_000_000).unwrap();
-        let fake = Fake {
-            calls: RefCell::new(vec![]),
-            bytes: png(),
-        };
-        let request = request("https://example.org/article", None);
-        assert_eq!(
-            acquire(&storage, &fake, &request, false).await.unwrap(),
-            Some(fake.bytes)
-        );
-        assert!(storage.cache_get(&request.key()).unwrap().is_none());
-        assert_eq!(storage.snapshot().unwrap().cache_bytes, 0);
-        assert!(storage.snapshot().unwrap().total_bytes() < 100_000_000);
     }
     #[tokio::test(flavor = "current_thread")]
     async fn oversized_and_invalid_rasters_never_enter_cache() {

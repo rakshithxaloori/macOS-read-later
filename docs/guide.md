@@ -7,7 +7,7 @@ no website, JavaScript, Node, Chromium, WebView, or Poppler helper.
 It combines a read-later inbox (like Matter) with an RSS reader (like
 NetNewsWire). Feeds keep older articles when a publisher's feed window slides,
 and links sent to your own WhatsApp chat as `save <link>` land in the Inbox.
-The installed app plus all managed data stays under 100 MB; full articles are
+The app stays under 50 MB and the library has no size limit; full articles are
 fetched on demand.
 
 See [CHANGELOG.md](../CHANGELOG.md) for what changed in each version.
@@ -92,8 +92,8 @@ Generate the PDF, open **Review exact stored PDF**, inspect it, and acknowledge
 that review before finalizing. In converted libraries, finalization retains the
 exact PDF and compact provenance, then retires snapshot text and production
 originals. Existing finalized editions become immutable PDF-only viewers. New
-production reserves its full working space within the same 100 MB budget and
-refuses an edition that cannot fit completely. It preserves article read and
+production records its full working space as in-flight work; the library has
+no size limit. It preserves article read and
 archive state.
 For a future native finalized issue, **Export PDF and free local space** first
 asks you to confirm, then choose an external PDF location. The app verifies the
@@ -113,10 +113,9 @@ its database, or use SQLite's online backup API for a consistent backup.
 The lean storage owner counts the installed bundle, SQLite and WAL, credentials,
 settings, PDFs, cache, receipts, and temporary production work. It reserves space
 before managed writes and evicts disposable cache first. Metadata and finalized
-PDFs are never automatically evicted. Storage exhaustion stops the operation with
-an error. Future native issues offer the explicit verified export-and-remove
-action when more space is needed.
-Developer toolchains and Cargo targets are outside this product budget.
+PDFs are never automatically evicted. Future native issues offer the explicit
+verified export-and-remove action to free local space.
+Developer toolchains and Cargo targets are not part of the app or library.
 
 Measure the installed product without changing it:
 

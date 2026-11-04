@@ -187,14 +187,12 @@ pub fn initialize_lean(connection: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A bounded database and short WAL complement the quota owner's reservations.
-/// Journal headroom is included in the global 100 MB ceiling.
+/// A short WAL keeps the database compact. The library has no size limit, so
+/// no page ceiling is set.
 pub fn configure_lean(connection: &Connection) -> anyhow::Result<()> {
-    let page_size =
-        u64::try_from(connection.query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))?)?;
-    anyhow::ensure!(page_size > 0, "SQLite returned an invalid page size");
-    let max_pages = 26_500_000 / page_size;
-    connection.execute_batch(&format!("PRAGMA temp_store=MEMORY; PRAGMA wal_autocheckpoint=16; PRAGMA journal_size_limit=0; PRAGMA max_page_count={max_pages};"))?;
+    connection.execute_batch(
+        "PRAGMA temp_store=MEMORY; PRAGMA wal_autocheckpoint=16; PRAGMA journal_size_limit=0;",
+    )?;
     Ok(())
 }
 
