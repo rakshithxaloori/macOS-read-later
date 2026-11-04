@@ -7,6 +7,12 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+### Changed
+- Release builds use fat link-time optimization with a single codegen unit.
+  The app shrinks from 43.4 MB to about 30.6 MB and the download from 21.7 MB
+  to about 17.2 MB, and it runs slightly faster. A clean release build takes
+  about a minute and a half longer.
+
 ## [0.3.4] - 2026-11-04
 
 ### Changed

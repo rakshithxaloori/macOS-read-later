@@ -57,7 +57,10 @@ security-framework = "3"
 tempfile = "3"
 
 [profile.release]
-lto = "thin"
+# Fat LTO with one codegen unit made the app 30% smaller (43.4 to 30.6 MB)
+# and slightly faster, at about 1.5 minutes more per clean release build.
+lto = "fat"
+codegen-units = 1
 strip = true
 
 [profile.dev]
