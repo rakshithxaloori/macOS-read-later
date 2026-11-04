@@ -22,4 +22,5 @@ rm -rf "$STAGING"
 # The website links to the stable name Reader.dmg on the latest release.
 cp "$DMG" "$OUT/Reader.dmg"
 shasum -a 256 "$DMG" | tee "$DMG.sha256"
+printf 'Disk image: %s bytes\n' "$(stat -f %z "$DMG")" >&2
 printf '%s\n' "$DMG"

@@ -2592,17 +2592,11 @@ fn run_child(
     let input_bytes = serde_json::to_vec(&job)?;
     let (reservation, pdf_limit) = if crate::db_compat::is_lean(connection)? {
         let storage = crate::storage::Storage::for_database(connection)?;
-        // Evict disposable reader copies before reserving serialized input,
-        // cover/interior/final PDFs, and the SQLite PDF plus FULL WAL copy.
-        storage.clear_cache()?;
-        let available = storage.snapshot()?.available_bytes();
+        // Record serialized input, cover/interior/final PDFs, and the SQLite
+        // PDF plus FULL WAL copy as in-flight work. The library is unbounded,
+        // so each PDF keeps only the new-issue 50 MB bound.
         let fixed = input_bytes.len() as u64 + 1_000_000;
-        let pdf_limit = available.saturating_sub(fixed) / 5;
-        ensure!(
-            pdf_limit >= 262_144,
-            "This complete edition cannot fit within the 100 MB storage budget"
-        );
-        let pdf_limit = pdf_limit.min(52_428_800);
+        let pdf_limit = 52_428_800;
         (
             Some(storage.reserve("complete magazine production", fixed + pdf_limit * 5)?),
             pdf_limit,
@@ -3173,7 +3167,7 @@ fn cover_raster(connection: &Connection, id: &MagazineId) -> Result<Option<Cover
             let Some((bytes, sha, pages)) = pdf else {
                 return Ok(None);
             };
-            let bytes = bytes.context("Stored cover PDF exceeds managed storage limit")?;
+            let bytes = bytes.context("Stored cover PDF exceeds 100 MB")?;
             crate::native_pdf::cover_thumbnail(&bytes, &sha, usize::try_from(pages)?)
                 .map_err(anyhow::Error::msg)?
         }

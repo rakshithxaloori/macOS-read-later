@@ -7,6 +7,26 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-04
+
+### Changed
+- The library has no size limit. Saving, importing, feed intake, magazine
+  production and updates no longer fail with "Storage budget exhausted". The
+  only size budget is the app: `Reader.app` must stay below 50 MB, and
+  `bundle.sh` fails a bundle that is not. `storage-audit` reports library size
+  and checks only the bundle.
+
+### Fixed
+- Install and Relaunch failed with "Storage budget exhausted" on libraries
+  near the old 100 MB limit. Updates now download into the system temporary
+  folder, check free disk space instead, and clean up on success and failure.
+- Reader no longer refuses to start when the app and library together pass
+  100 MB, and the library database no longer stops growing at 26.5 MB.
+
+### Upgrading
+- Reader 0.3.3's updater can fail with "Storage budget exhausted", so 0.3.3
+  users may need to download 0.3.4 once by hand. Updates work from 0.3.4 on.
+
 ## [0.3.3] - 2026-11-03
 
 ### Added

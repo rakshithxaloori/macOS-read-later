@@ -472,7 +472,7 @@ mod macos {
         expected_pages: usize,
     ) -> Result<image::RgbaImage, String> {
         if bytes.is_empty() || bytes.len() >= 100_000_000 {
-            return Err("Stored cover PDF exceeds the managed storage limit".into());
+            return Err("Stored cover PDF exceeds 100 MB".into());
         }
         if format!("{:x}", Sha256::digest(bytes)) != expected_sha256 {
             return Err("Stored cover PDF hash mismatch".into());

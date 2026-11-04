@@ -79,6 +79,15 @@ fi
 /usr/bin/plutil -lint "$APP/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict "$APP"
+# The app bundle is the only size budget; the library is unbounded.
+LIMIT=50000000
+BYTES=$(( $(du -sk "$APP" | cut -f1) * 1024 ))
+if [ "$BYTES" -ge "$LIMIT" ]; then
+  printf 'App bundle is %s bytes; it must stay below %s bytes (50 MB)\n' "$BYTES" "$LIMIT" >&2
+  rm -rf "$APP"
+  exit 1
+fi
+printf 'App bundle: %s bytes (limit %s)\n' "$BYTES" "$LIMIT" >&2
 # Never rewrite an executable in a running bundle. Publish the complete signed
 # directory by rename, preserving mapped executable bytes in the old process.
 if [ "$STAGE" = no ]; then

@@ -1338,7 +1338,6 @@ impl eframe::App for App {
                     crate::updater::install(
                         &self.runtime,
                         version,
-                        self.dirs.data.clone(),
                         self.update_tx.clone(),
                         move || repaint.request_repaint(),
                     );

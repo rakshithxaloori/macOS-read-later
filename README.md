@@ -41,7 +41,7 @@ share sheet, no account.
 
 ## How it is different
 
-It is small. The app and all of its data stay under 100 MB. It does this by
+It is small. The app stays under 50 MB, and the library stays lean by
 keeping what matters forever (every article's title, link, preview, author, and
 whether you have read it) and treating full article text as a cache. Bodies and
 images live in a 20 MB cache for seven days and are fetched again when needed.
@@ -134,7 +134,7 @@ The tests use synthetic data. They never contact publishers or WhatsApp.
 - [User guide](docs/guide.md) covers each screen in detail.
 - [Changing the app](docs/hacking.md) is the map for you and your coding agent.
 - [Architecture](docs/architecture.md) explains how the pieces fit together.
-- [Storage](docs/storage.md) explains the 100 MB budget and the cache.
+- [Storage](docs/storage.md) explains the 50 MB app limit and the cache.
 - [CHANGELOG.md](CHANGELOG.md) lists what changed in each release.
 
 ## License

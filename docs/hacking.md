@@ -20,7 +20,7 @@ PDFs are drawn with AppKit and PDFKit.
 | WhatsApp saving | `src/whatsapp.rs`, `src/ui/whatsapp.rs` |
 | Magazines and PDFs | `src/magazine.rs`, `src/production_renderer.rs`, `src/native_pdf.rs` |
 | Import and export | `src/imports.rs`, `src/exports.rs` |
-| The 100 MB storage budget | `src/storage.rs`, [storage.md](storage.md) |
+| Storage, the article cache and the 50 MB app limit | `src/storage.rs`, [storage.md](storage.md) |
 
 [architecture.md](architecture.md) explains how these talk to each other.
 
@@ -44,8 +44,9 @@ it takes a few minutes. Later builds are quick.
 - Tests use synthetic data only. Never add a test that contacts a real
   publisher, WhatsApp, or the network.
 - Do not store full article text or images permanently. Only metadata is
-  permanent; bodies go through the cache in `src/storage.rs`. This is how the
-  app stays under 100 MB.
+  permanent; bodies go through the cache in `src/storage.rs`. This keeps the
+  library lean. The library has no size limit, but `Reader.app` must stay
+  under 50 MB; `packaging/macos/bundle.sh` fails a bundle that is not.
 - Database changes go through the single owner in `src/backend.rs`. Do not open
   extra write connections from the UI.
 - Never commit a library, a `.sqlite3` file, WhatsApp credentials, or anything in

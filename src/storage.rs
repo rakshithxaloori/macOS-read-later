@@ -1,4 +1,9 @@
-//! One disk budget shared by every writer using the same native data directory.
+//! The storage owner shared by every writer using the same native data directory.
+//!
+//! The library has no size limit. Reservations still record in-flight work and
+//! bound each job to its declared size, and the disposable article cache keeps
+//! its own LRU bound. The only fixed budget is the app bundle, checked when it
+//! is packaged and by `storage-audit`.
 //!
 //! Reservations use locked files. A crashed process releases its lock, allowing
 //! the next writer to reclaim its claim without relying on PID reuse or clocks.
@@ -17,10 +22,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const LIMIT_BYTES: u64 = 100_000_000;
+/// The app bundle must stay strictly below this size.
+pub const APP_BUNDLE_LIMIT_BYTES: u64 = 50_000_000;
 pub const CACHE_BYTES: u64 = 20_000_000;
 pub const DEFAULT_BUNDLE_BYTES: u64 = 45_000_000;
-pub const SAFETY_BYTES: u64 = 2_000_000;
 const INDEX_LIMIT: u64 = 2_000_000;
 const TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 
@@ -45,18 +50,10 @@ pub struct Usage {
     pub bundle_bytes: u64,
     pub reserved_bytes: u64,
     pub cache_bytes: u64,
-    pub limit_bytes: u64,
 }
 impl Usage {
     pub fn total_bytes(&self) -> u64 {
         self.managed_bytes.saturating_add(self.bundle_bytes)
-    }
-    pub fn available_bytes(&self) -> u64 {
-        self.limit_bytes.saturating_sub(
-            self.total_bytes()
-                .saturating_add(self.reserved_bytes)
-                .saturating_add(SAFETY_BYTES),
-        )
     }
 }
 #[derive(Clone, Debug)]
@@ -164,17 +161,11 @@ pub struct Reservation {
     bytes: u64,
 }
 impl Reservation {
-    /// Check growing work before publishing it. Claims deliberately overcount
-    /// partially written work so concurrent writers can never spend its space.
+    /// Check that growing work stays within the size it declared.
     pub fn check(&self, actual_bytes: u64) -> Result<()> {
         ensure!(
             actual_bytes <= self.bytes,
             "Work exceeded its storage reservation"
-        );
-        let usage = self.storage.snapshot()?;
-        ensure!(
-            usage.total_bytes() < LIMIT_BYTES,
-            "Reader reached its 100 MB storage limit"
         );
         Ok(())
     }
@@ -263,8 +254,8 @@ pub struct Audit {
     pub bundle_bytes: u64,
     pub managed_bytes: u64,
     pub total_bytes: u64,
-    pub limit_bytes: u64,
-    pub below_limit: bool,
+    pub bundle_limit_bytes: u64,
+    pub bundle_below_limit: bool,
     pub managed_breakdown: BTreeMap<String, u64>,
 }
 
@@ -310,8 +301,8 @@ pub fn audit(root: &Path, bundle: &Path) -> Result<Audit> {
         bundle_bytes,
         managed_bytes,
         total_bytes,
-        limit_bytes: LIMIT_BYTES,
-        below_limit: total_bytes < LIMIT_BYTES,
+        bundle_limit_bytes: APP_BUNDLE_LIMIT_BYTES,
+        bundle_below_limit: bundle_bytes < APP_BUNDLE_LIMIT_BYTES,
         managed_breakdown,
     })
 }
@@ -329,7 +320,10 @@ pub fn audit_cli(args: &[String]) -> Result<()> {
     )?;
     let report = audit(&options.data_root, &options.bundle)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    ensure!(report.below_limit, "Installed app and data exceed 100 MB");
+    ensure!(
+        report.bundle_below_limit,
+        "The app bundle is not below 50 MB"
+    );
     Ok(())
 }
 
@@ -342,10 +336,6 @@ fn key(id: &str) -> String {
 
 impl Storage {
     pub fn new(root: impl AsRef<Path>, bundle_bytes: u64) -> Result<Self> {
-        ensure!(
-            bundle_bytes.saturating_add(SAFETY_BYTES) < LIMIT_BYTES,
-            "App bundle leaves no room for its library"
-        );
         let root = root.as_ref();
         ensure!(root.is_absolute(), "Managed storage path must be absolute");
         regular_directory(root)?;
@@ -467,33 +457,15 @@ impl Storage {
             bundle_bytes,
             reserved_bytes,
             cache_bytes: bytes_in(&self.cache())?,
-            limit_bytes: LIMIT_BYTES,
         })
     }
     pub fn snapshot(&self) -> Result<Usage> {
         let _guard = self.lock()?;
         self.snapshot_locked()
     }
-    /// Use the measured installed bundle size, never a debug or development build.
+    /// Record the measured installed bundle size for reporting.
     pub fn set_bundle_bytes(&self, bytes: u64) -> Result<()> {
-        ensure!(
-            bytes.saturating_add(SAFETY_BYTES) < LIMIT_BYTES,
-            "App bundle leaves no library budget"
-        );
         let _guard = self.lock()?;
-        let old = self.snapshot_locked()?;
-        let mut index = self.read_index()?;
-        self.evict_locked(&mut index, bytes.saturating_sub(old.bundle_bytes))?;
-        let current = self.snapshot_locked()?;
-        ensure!(
-            current
-                .managed_bytes
-                .saturating_add(bytes)
-                .saturating_add(current.reserved_bytes)
-                .saturating_add(SAFETY_BYTES)
-                < LIMIT_BYTES,
-            "Installed bundle and durable library exceed the storage budget"
-        );
         self.write_json(&self.root.join("storage-policy.json"), &bytes)
     }
     fn remove_entry(&self, index: &mut Index, id: &str) -> Result<()> {
@@ -503,22 +475,6 @@ impl Storage {
                 fs::remove_dir_all(path)?;
             }
         }
-        Ok(())
-    }
-    fn evict_locked(&self, index: &mut Index, needed: u64) -> Result<()> {
-        let mut order: Vec<_> = index
-            .entries
-            .iter()
-            .map(|(id, e)| (e.touched_at, id.clone()))
-            .collect();
-        order.sort();
-        for (_, id) in order {
-            if self.snapshot_locked()?.available_bytes() >= needed {
-                break;
-            }
-            self.remove_entry(index, &id)?;
-        }
-        self.save_index(index)?;
         Ok(())
     }
     fn recover_locked(&self) -> Result<()> {
@@ -556,18 +512,10 @@ impl Storage {
     pub fn require(&self, bytes: u64) -> Result<Reservation> {
         self.reserve("work", bytes)
     }
+    /// Record in-flight work. The library has no size limit, so this never
+    /// refuses work for lack of budget.
     pub fn reserve(&self, kind: &str, bytes: u64) -> Result<Reservation> {
-        ensure!(
-            bytes < LIMIT_BYTES,
-            "Requested work cannot fit below 100 MB"
-        );
         let _guard = self.lock()?;
-        let mut index = self.read_index()?;
-        self.evict_locked(&mut index, bytes)?;
-        ensure!(
-            self.snapshot_locked()?.available_bytes() >= bytes,
-            "Storage budget exhausted. Export or remove a finalized PDF before adding more data"
-        );
         let path = self.claims().join(uuid::Uuid::new_v4().to_string());
         let mut file = private_file(&path)?;
         file.lock_exclusive()?;
@@ -708,10 +656,6 @@ impl Storage {
             }
             self.remove_entry(&mut index, &id)?;
         }
-        self.evict_locked(&mut index, occupied_bound.saturating_add(INDEX_LIMIT))?;
-        if self.snapshot_locked()?.available_bytes() < occupied_bound.saturating_add(INDEX_LIMIT) {
-            return Ok(false);
-        }
         let name = key(article_id);
         let directory = self.cache().join(&name);
         if directory.exists() {
@@ -749,10 +693,6 @@ impl Storage {
             },
         );
         self.save_index(&index)?;
-        ensure!(
-            self.snapshot_locked()?.total_bytes() < LIMIT_BYTES,
-            "Cache publication exceeded storage budget"
-        );
         Ok(true)
     }
 }

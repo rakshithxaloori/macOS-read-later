@@ -205,12 +205,13 @@ async fn encrypted_native_keys_survive_restart_and_reject_other_owner() -> Resul
 }
 
 #[tokio::test]
-async fn credential_quota_refusal_does_not_create_a_session_file() -> Result<()> {
+async fn credentials_open_in_a_library_past_the_old_100_mb_limit() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    macos_read_later::storage::Storage::new(directory.path(), 96_000_000)?;
+    // A 96 MB app once left no room for the credential store's reservation.
+    let storage = macos_read_later::storage::Storage::new(directory.path(), 96_000_000)?;
+    storage.set_bundle_bytes(96_000_000)?;
     let path = directory.path().join("whatsapp/session.sqlite3");
-    let result = macos_read_later::credentials::encrypted_store(&path, &[31; 32], OWNER).await;
-    assert!(result.is_err());
-    assert!(!path.exists());
+    macos_read_later::credentials::encrypted_store(&path, &[31; 32], OWNER).await?;
+    assert!(path.exists());
     Ok(())
 }

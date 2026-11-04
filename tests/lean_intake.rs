@@ -78,117 +78,6 @@ async fn lean_feed_crash_replay_reclaims_xml_without_publisher_jobs_or_resurrect
 }
 
 #[test]
-fn file_backed_rss_quota_refusal_preserves_capture_and_replay_state() {
-    use macos_read_later::storage::{LIMIT_BYTES, SAFETY_BYTES, Storage};
-    fn leave_available(storage: &Storage, bytes: u64) {
-        let usage = storage.snapshot().unwrap();
-        assert_eq!(usage.reserved_bytes, 0);
-        storage
-            .set_bundle_bytes(LIMIT_BYTES - SAFETY_BYTES - usage.managed_bytes - bytes)
-            .unwrap();
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let mut c = db_compat::open(&directory.path().join("library.sqlite3")).unwrap();
-    db_compat::initialize_lean(&c).unwrap();
-    intake::initialize(&c).unwrap();
-    let (existing, _) = library::save(
-        &mut c,
-        "https://example.org/a",
-        ArrivalKind::Rss,
-        "earlier-arrival",
-        "Earlier RSS",
-        Some("Retained title"),
-        None,
-    )
-    .unwrap();
-    library::update(&c, &existing, None, Some(true)).unwrap();
-    let state = |c: &Connection| {
-        c.query_row(
-            "SELECT title,read_at,archived_at FROM articles WHERE id=?1",
-            [&existing.0],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
-        .unwrap()
-    };
-    let before = state(&c);
-    library::add_feed(&mut c, "https://example.org/feed").unwrap();
-    let lease = intake::claim_worker(&mut c).unwrap().unwrap();
-    let job = intake::claim_job(&mut c, &lease).unwrap().unwrap();
-    let xml=xml().replace("</channel>","<item><title>New quota article</title><link>https://example.org/quota-new</link><description>New preview survives quota retry.</description></item></channel>");
-    let storage = Storage::for_database(&c).unwrap();
-    db_compat::reclaim(&c).unwrap();
-    leave_available(&storage, 131_072);
-    assert!(intake::persist_capture(&mut c, &lease, &job, &xml).is_err());
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM feed_captures", [], |r| r
-            .get::<_, u32>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(state(&c), before);
-    assert!(storage.snapshot().unwrap().total_bytes() < LIMIT_BYTES);
-
-    storage.set_bundle_bytes(0).unwrap();
-    let capture = intake::persist_capture(&mut c, &lease, &job, &xml).unwrap();
-    db_compat::reclaim(&c).unwrap();
-    leave_available(&storage, 524_288);
-    assert!(intake::replay_capture(&mut c, &lease, &job, &capture).is_err());
-    let retained: (String, Option<String>) = c
-        .query_row(
-            "SELECT xml,processed_at FROM feed_captures WHERE id=?1",
-            [&capture],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(retained, (xml, None));
-    assert_eq!(state(&c), before);
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM articles", [], |r| r.get::<_, u32>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        c.query_row(
-            "SELECT state,attempts FROM jobs WHERE id=?1",
-            [&job.id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
-        )
-        .unwrap(),
-        ("running".into(), 1)
-    );
-    assert!(storage.snapshot().unwrap().total_bytes() < LIMIT_BYTES);
-
-    storage.set_bundle_bytes(0).unwrap();
-    intake::replay_capture(&mut c, &lease, &job, &capture).unwrap();
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM feed_captures", [], |r| r
-            .get::<_, u32>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(state(&c), before);
-    let article = library::articles(&c, &Query::for_scope(Scope::Inbox), 0)
-        .unwrap()
-        .remove(0);
-    assert_eq!(article.title, "New quota article");
-    assert_eq!(article.excerpt, "New preview survives quota retry.");
-    assert!(library::body(&c, &article.id).unwrap().html.is_empty());
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM article_media", [], |r| r
-            .get::<_, u32>(0))
-            .unwrap(),
-        0
-    );
-    assert!(storage.snapshot().unwrap().total_bytes() < LIMIT_BYTES);
-}
-
-#[test]
 fn file_backed_rss_pending_buffer_is_shared_and_bounded() {
     let directory = tempfile::tempdir().unwrap();
     let mut c = db_compat::open(&directory.path().join("library.sqlite3")).unwrap();
@@ -209,14 +98,53 @@ fn file_backed_rss_pending_buffer_is_shared_and_bounded() {
     let error = intake::persist_capture(&mut c, &lease, &job, "z").unwrap_err();
     assert!(error.to_string().contains("RSS replay buffer is full"));
     assert_eq!(c.query_row("SELECT count(*),sum(length(CAST(xml AS BLOB))) FROM feed_captures WHERE processed_at IS NULL",[],|r|Ok((r.get::<_,u32>(0)?,r.get::<_,i64>(1)?))).unwrap(),(2,network::MAX_RESPONSE as i64));
-    assert!(
-        macos_read_later::storage::Storage::for_database(&c)
-            .unwrap()
-            .snapshot()
-            .unwrap()
-            .total_bytes()
-            < 100_000_000
-    );
+}
+
+#[test]
+fn a_library_past_the_old_100_mb_limit_keeps_saving_importing_and_capturing() {
+    use macos_read_later::storage::Storage;
+    let directory = tempfile::tempdir().unwrap();
+    let mut c = db_compat::open(&directory.path().join("library.sqlite3")).unwrap();
+    db_compat::initialize_lean(&c).unwrap();
+    intake::initialize(&c).unwrap();
+    let storage = Storage::for_database(&c).unwrap();
+    // A 45 MB app with 120 MB of library work in flight: these refusals were
+    // "Storage budget exhausted" before the library cap was removed.
+    storage.set_bundle_bytes(45_000_000).unwrap();
+    let _work = storage.reserve("large import", 120_000_000).unwrap();
+    let usage = storage.snapshot().unwrap();
+    assert!(usage.total_bytes() + usage.reserved_bytes > 100_000_000);
+
+    library::add_feed(&mut c, "https://example.org/feed").unwrap();
+    let lease = intake::claim_worker(&mut c).unwrap().unwrap();
+    let job = intake::claim_job(&mut c, &lease).unwrap().unwrap();
+    let capture = intake::persist_capture(&mut c, &lease, &job, &xml()).unwrap();
+    intake::replay_capture(&mut c, &lease, &job, &capture).unwrap();
+
+    library::save(
+        &mut c,
+        "https://example.org/saved",
+        ArrivalKind::Web,
+        "over-limit-save",
+        "Manual save",
+        Some("Saved past the old limit"),
+        None,
+    )
+    .unwrap();
+
+    let upload = tempfile::tempdir().unwrap();
+    let csv = upload.path().join("rows.csv");
+    let mut rows = "url,title\n".to_owned();
+    for i in 0..30 {
+        rows.push_str(&format!("https://example.org/{i},{}\n", "x".repeat(900)));
+    }
+    std::fs::write(&csv, rows).unwrap();
+    let run = imports::stage(&mut c, &csv).unwrap();
+    imports::start(&mut c, &run, false).unwrap();
+    while imports::run_batch(&mut c).unwrap() {}
+    assert_eq!(imports::list(&c).unwrap().remove(0).state, "completed");
+
+    assert!(library::counts(&c).unwrap().all >= 32);
 }
 
 #[test]
@@ -402,32 +330,6 @@ fn archive_fences_racing_cache_publication_and_preserves_metadata() {
 }
 
 #[test]
-fn quota_refuses_import_staging_without_partial_run() {
-    use macos_read_later::storage::Storage;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("library.sqlite3");
-    let mut c = db_compat::open(&path).unwrap();
-    db_compat::initialize_lean(&c).unwrap();
-    let storage = Storage::new(directory.path(), 97_000_000).unwrap();
-    storage.set_bundle_bytes(97_000_000).unwrap();
-    let upload = tempfile::tempdir().unwrap();
-    let path = upload.path().join("large.csv");
-    let mut csv = "url,title\n".to_owned();
-    for i in 0..500 {
-        csv.push_str(&format!("https://example.org/{i},{}\n", "x".repeat(900)));
-    }
-    std::fs::write(&path, csv).unwrap();
-    assert!(imports::stage(&mut c, &path).is_err());
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM import_runs", [], |r| r
-            .get::<_, u32>(0))
-            .unwrap(),
-        0
-    );
-    assert!(storage.snapshot().unwrap().total_bytes() < 100_000_000);
-}
-
-#[test]
 fn import_start_and_removal_serialize_with_intake_before_reading_quota() {
     use rusqlite::{functions::FunctionFlags, types::ValueRef};
     use std::sync::{
@@ -500,49 +402,6 @@ fn import_start_and_removal_serialize_with_intake_before_reading_quota() {
         intake.busy_timeout(std::time::Duration::ZERO).unwrap();
         intake.execute("INSERT INTO worker_health(id,heartbeat_at) VALUES(1,'2031-01-01') ON CONFLICT(id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at",[]).unwrap();
     }
-}
-
-#[test]
-fn quota_paused_import_retries_pending_rows_without_resetting_completed_rows() {
-    use macos_read_later::storage::Storage;
-    let directory = tempfile::tempdir().unwrap();
-    let mut c = db_compat::open(&directory.path().join("library.sqlite3")).unwrap();
-    db_compat::initialize_lean(&c).unwrap();
-    let upload = tempfile::tempdir().unwrap();
-    let path = upload.path().join("rows.csv");
-    let mut csv = "url,title\n".to_owned();
-    for i in 0..50 {
-        csv.push_str(&format!("https://example.org/{i},Article {i}\n"));
-    }
-    std::fs::write(&path, csv).unwrap();
-    let run = imports::stage(&mut c, &path).unwrap();
-    imports::start(&mut c, &run, false).unwrap();
-    assert!(imports::run_batch(&mut c).unwrap());
-    let first = library::articles(&c, &Query::for_scope(Scope::Inbox), 0).unwrap()[0]
-        .id
-        .clone();
-    library::update(&c, &first, None, Some(true)).unwrap();
-    db_compat::reclaim(&c).unwrap();
-    let storage = Storage::for_database(&c).unwrap();
-    let managed = storage.snapshot().unwrap().managed_bytes;
-    // Leave room for committing a short failure diagnostic, not another row.
-    storage
-        .set_bundle_bytes(100_000_000 - managed - 2_000_000 - 65_536)
-        .unwrap();
-    assert!(imports::run_batch(&mut c).is_err());
-    let progress = imports::list(&c).unwrap().remove(0);
-    assert_eq!(
-        (progress.state.as_str(), progress.added, progress.pending),
-        ("failed", 25, 25)
-    );
-    assert!(progress.error.is_some());
-    storage.set_bundle_bytes(0).unwrap();
-    imports::start(&mut c, &run, true).unwrap();
-    while imports::run_batch(&mut c).unwrap() {}
-    assert_eq!(library::counts(&c).unwrap().all, 50);
-    assert!(library::metadata(&c, &first).unwrap().archived_at.is_some());
-    let progress = imports::list(&c).unwrap().remove(0);
-    assert_eq!((progress.state.as_str(), progress.added), ("completed", 50));
 }
 
 #[test]

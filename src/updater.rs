@@ -175,7 +175,6 @@ pub fn current_bundle() -> Option<PathBuf> {
 pub fn install(
     runtime: &tokio::runtime::Runtime,
     version: Version,
-    data: PathBuf,
     events: Sender,
     wake: impl Fn() + Send + Sync + 'static,
 ) {
@@ -191,7 +190,7 @@ pub fn install(
                 Ok(()) => Event::OpenedDownload(version),
                 Err(e) => Event::Failed(format!("{e:#}")),
             },
-            Some(bundle) => match stage(&handle, version, &data, &bundle, &progress) {
+            Some(bundle) => match stage(&handle, version, &bundle, &progress) {
                 Ok(staged) => Event::Staged(Install {
                     version,
                     bundle,
@@ -225,10 +224,29 @@ pub fn target_path(bundle: &Path) -> PathBuf {
     bundle.with_file_name(APP_NAME)
 }
 
+/// Update files live in the per-user temporary folder, outside the library,
+/// and only free disk space decides whether an update can run.
+fn work_dir() -> PathBuf {
+    std::env::temp_dir().join("reader-update")
+}
+
+/// Fail early, with a clear message, when a volume cannot hold `bytes` more.
+fn ensure_free(path: &Path, bytes: u64, what: &str) -> Result<()> {
+    let free = fs2::available_space(path)
+        .with_context(|| format!("Cannot measure free space at {}", path.display()))?;
+    ensure!(
+        free >= bytes,
+        "Not enough free disk space to {what}: {} MB needed, {} MB free on the volume holding {}",
+        bytes.div_ceil(1_000_000),
+        free / 1_000_000,
+        path.display()
+    );
+    Ok(())
+}
+
 fn stage(
     runtime: &tokio::runtime::Handle,
     version: Version,
-    data: &Path,
     bundle: &Path,
     progress: &dyn Fn(&str),
 ) -> Result<PathBuf> {
@@ -238,79 +256,99 @@ fn stage(
         "{} already exists next to this app. Remove one of them and try again.",
         target.display()
     );
-    let work = data.join("cache").join("update");
+    let work = work_dir();
     remove(&work)?;
     std::fs::create_dir_all(&work)?;
     let result = (|| {
         progress("Downloading");
         let image = work.join("update.dmg");
-        runtime.block_on(download(version, data, &image))?;
-        // reqwest never sets quarantine; clear any a policy may have added.
-        let _ = run(
-            "/usr/bin/xattr",
-            &["-dr", "com.apple.quarantine", path(&image)?],
-        );
-        progress("Verifying");
-        let mount = std::env::temp_dir().join(format!("read-later-update-{}", std::process::id()));
-        remove(&mount)?;
-        std::fs::create_dir_all(&mount)?;
-        run(
-            "/usr/bin/hdiutil",
-            &[
-                "attach",
-                "-nobrowse",
-                "-readonly",
-                "-noautoopen",
-                "-mountpoint",
-                path(&mount)?,
-                path(&image)?,
-            ],
-        )
-        .context("The downloaded disk image could not be opened")?;
-        let staged = staging_path(bundle);
-        let copied = (|| {
-            let app = [APP_NAME, LEGACY_APP_NAME]
-                .into_iter()
-                .map(|name| mount.join(name))
-                .find(|app| app.is_dir())
-                .context("The disk image does not contain Reader")?;
-            verify(&app, version)?;
-            remove(&staged)?;
-            progress("Copying");
-            run("/usr/bin/ditto", &[path(&app)?, path(&staged)?])
-        })();
-        let _ = run("/usr/bin/hdiutil", &["detach", "-quiet", path(&mount)?]);
-        let _ = std::fs::remove_dir(&mount);
-        // Free the image's space before the swap briefly holds two bundles.
-        let _ = remove(&work);
-        copied?;
-        let finished = (|| {
-            let _ = run(
-                "/usr/bin/xattr",
-                &["-dr", "com.apple.quarantine", path(&staged)?],
-            );
-            // A bundle built from this checkout points at its library. The
-            // released image is portable, so keep that pointer and re-seal.
-            let pointer = Path::new("Contents/Resources/default-data-directory");
-            if bundle.join(pointer).is_file() {
-                std::fs::copy(bundle.join(pointer), staged.join(pointer))?;
-                run(
-                    "/usr/bin/codesign",
-                    &["--force", "--sign", "-", path(&staged)?],
-                )?;
-            }
-            verify(&staged, version)
-        })();
-        if finished.is_err() {
-            let _ = remove(&staged);
-        }
-        finished.map(|()| staged)
+        runtime.block_on(download(version, &image))?;
+        stage_image(&image, version, bundle, progress)
     })();
     let _ = remove(&work);
     result
 }
 
-async fn download(version: Version, data: &Path, destination: &Path) -> Result<()> {
+/// Verify the app in `image` and copy it beside `bundle`. The image is
+/// detached and deleted before returning, on success and on failure.
+fn stage_image(
+    image: &Path,
+    version: Version,
+    bundle: &Path,
+    progress: &dyn Fn(&str),
+) -> Result<PathBuf> {
+    // reqwest never sets quarantine; clear any a policy may have added.
+    let _ = run(
+        "/usr/bin/xattr",
+        &["-dr", "com.apple.quarantine", path(image)?],
+    );
+    progress("Verifying");
+    let mount = image.with_extension("mount");
+    remove(&mount)?;
+    std::fs::create_dir_all(&mount)?;
+    run(
+        "/usr/bin/hdiutil",
+        &[
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-noautoopen",
+            "-mountpoint",
+            path(&mount)?,
+            path(image)?,
+        ],
+    )
+    .context("The downloaded disk image could not be opened")?;
+    let staged = staging_path(bundle);
+    let copied = (|| {
+        let app = [APP_NAME, LEGACY_APP_NAME]
+            .into_iter()
+            .map(|name| mount.join(name))
+            .find(|app| app.is_dir())
+            .context("The disk image does not contain Reader")?;
+        verify(&app, version)?;
+        remove(&staged)?;
+        let parent = bundle.parent().context("The app has no parent folder")?;
+        ensure_free(
+            parent,
+            crate::storage::measured_bytes(&app)?.saturating_add(10_000_000),
+            "copy the new app",
+        )?;
+        progress("Copying");
+        run("/usr/bin/ditto", &[path(&app)?, path(&staged)?])
+    })();
+    let _ = run("/usr/bin/hdiutil", &["detach", "-quiet", path(&mount)?]);
+    let _ = std::fs::remove_dir(&mount);
+    // Free the image's space before the swap briefly holds two bundles.
+    let _ = remove(image);
+    if let Err(error) = copied {
+        let _ = remove(&staged);
+        return Err(error);
+    }
+    let finished = (|| {
+        let _ = run(
+            "/usr/bin/xattr",
+            &["-dr", "com.apple.quarantine", path(&staged)?],
+        );
+        // A bundle built from this checkout points at its library. The
+        // released image is portable, so keep that pointer and re-seal.
+        let pointer = Path::new("Contents/Resources/default-data-directory");
+        if bundle.join(pointer).is_file() {
+            std::fs::copy(bundle.join(pointer), staged.join(pointer))?;
+            run(
+                "/usr/bin/codesign",
+                &["--force", "--sign", "-", path(&staged)?],
+            )?;
+        }
+        verify(&staged, version)
+    })();
+    if finished.is_err() {
+        let _ = remove(&staged);
+    }
+    finished.map(|()| staged)
+}
+
+async fn download(version: Version, destination: &Path) -> Result<()> {
     let client = client(true)?;
     let mut response = None;
     for name in ["Reader.dmg", LEGACY_IMAGE] {
@@ -330,8 +368,12 @@ async fn download(version: Version, data: &Path, destination: &Path) -> Result<(
         expected <= MAX_IMAGE_BYTES,
         "The release image is unexpectedly large"
     );
-    let storage = crate::storage::Storage::new(data, crate::storage::DEFAULT_BUNDLE_BYTES)?;
-    let reservation = storage.reserve("update download", expected)?;
+    // The image, plus room to verify it, in the temporary folder.
+    ensure_free(
+        destination.parent().unwrap_or(destination),
+        expected.saturating_mul(2),
+        "download the update",
+    )?;
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -339,7 +381,7 @@ async fn download(version: Version, data: &Path, destination: &Path) -> Result<(
     let mut written = 0u64;
     while let Some(chunk) = response.chunk().await? {
         written += chunk.len() as u64;
-        reservation.check(written)?;
+        ensure!(written <= expected, "The download is larger than announced");
         file.write_all(&chunk)?;
     }
     file.sync_all()?;
@@ -541,6 +583,109 @@ mod tests {
         assert!(!response_complete(9, 10));
         assert!(!response_complete(0, MAX_IMAGE_BYTES));
         assert!(response_complete(5, MAX_IMAGE_BYTES));
+    }
+
+    /// A fake signed Reader.app at `version` inside a new disk image.
+    fn release_image(dir: &Path, version: &str) -> PathBuf {
+        let source = dir.join("image-source");
+        let app = source.join(APP_NAME);
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/macos-read-later")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.reading-list.native.test</string>
+<key>CFBundleExecutable</key><string>macos-read-later</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>{version}</string>
+</dict></plist>"#
+            ),
+        )
+        .unwrap();
+        run(
+            "/usr/bin/codesign",
+            &["--force", "--sign", "-", path(&app).unwrap()],
+        )
+        .unwrap();
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let image = work.join("update.dmg");
+        run(
+            "/usr/bin/hdiutil",
+            &[
+                "create",
+                "-quiet",
+                "-fs",
+                "HFS+",
+                "-format",
+                "UDZO",
+                "-srcfolder",
+                path(&source).unwrap(),
+                path(&image).unwrap(),
+            ],
+        )
+        .unwrap();
+        image
+    }
+
+    #[test]
+    fn staging_succeeds_with_a_library_over_the_old_100_mb_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library");
+        let storage = crate::storage::Storage::new(&library, 45_000_000).unwrap();
+        // 45 MB of app plus 120 MB of in-flight library work: far past the
+        // retired 100 MB cap, which once refused the update download.
+        let _work = storage.reserve("large import", 120_000_000).unwrap();
+        let usage = storage.snapshot().unwrap();
+        assert!(usage.total_bytes() + usage.reserved_bytes > 100_000_000);
+        assert!(!work_dir().starts_with(&library));
+        let image = release_image(dir.path(), "9.9.9");
+        let bundle = dir.path().join("apps").join(LEGACY_APP_NAME);
+        std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+        let pointer = "Contents/Resources/default-data-directory";
+        std::fs::write(bundle.join(pointer), format!("{}\n", library.display())).unwrap();
+
+        let staged = stage_image(&image, Version(9, 9, 9), &bundle, &|_| {}).unwrap();
+        assert_eq!(staged, staging_path(&bundle));
+        verify(&staged, Version(9, 9, 9)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(staged.join(pointer)).unwrap(),
+            std::fs::read_to_string(bundle.join(pointer)).unwrap()
+        );
+        assert!(!image.exists() && !image.with_extension("mount").exists());
+        // Nothing was written into the library.
+        assert_eq!(
+            storage.snapshot().unwrap().managed_bytes,
+            usage.managed_bytes
+        );
+    }
+
+    #[test]
+    fn staging_cleans_up_when_the_image_is_the_wrong_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = release_image(dir.path(), "9.9.8");
+        let bundle = dir.path().join("apps").join(APP_NAME);
+        std::fs::create_dir_all(&bundle).unwrap();
+        let error = stage_image(&image, Version(9, 9, 9), &bundle, &|_| {}).unwrap_err();
+        assert!(format!("{error:#}").contains("9.9.8 instead of 9.9.9"));
+        assert!(!image.exists() && !image.with_extension("mount").exists());
+        assert!(!staging_path(&bundle).exists());
+    }
+
+    #[test]
+    fn free_space_checks_name_the_shortfall() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_free(dir.path(), 1, "test").unwrap();
+        let error = ensure_free(dir.path(), u64::MAX, "download the update").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("Not enough free disk space to download the update")
+        );
     }
 
     #[test]
