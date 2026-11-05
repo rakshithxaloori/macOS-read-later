@@ -5,6 +5,10 @@
 //! its own LRU bound. The only fixed budget is the app bundle, checked when it
 //! is packaged and by `storage-audit`.
 //!
+//! Saved local copies are the exception to disposable bodies: an article the
+//! reader explicitly keeps is stored under `saved-copies` in the same format,
+//! never expires or gets evicted, and is removed only on request or deletion.
+//!
 //! Reservations use locked files. A crashed process releases its lock, allowing
 //! the next writer to reclaim its claim without relying on PID reuse or clocks.
 use crate::domain::CopyStatus;
@@ -152,6 +156,41 @@ fn read_cached(directory: &Path) -> Result<CachedArticle> {
         word_count: disk.word_count,
         fetched_at: disk.fetched_at,
     })
+}
+
+/// Write a complete article directory in the cache's on-disk format.
+fn write_article(directory: &Path, article: &CachedArticle) -> Result<()> {
+    let mut disk = DiskArticle {
+        html: article.html.clone(),
+        media: Vec::new(),
+        status: article.status,
+        error: article.error.clone(),
+        word_count: article.word_count,
+        fetched_at: article.fetched_at.clone(),
+    };
+    let mut bytes = article.html.len() as u64;
+    for (number, media) in article.media.iter().enumerate() {
+        ensure!(media.bytes.len() <= 5_242_880, "Saved image exceeds 5 MB");
+        bytes = bytes.saturating_add(media.bytes.len() as u64);
+        ensure!(bytes <= CACHE_BYTES, "Saved article exceeds its bound");
+        let mut file = private_file(&directory.join(number.to_string()))?;
+        file.set_len(0)?;
+        file.write_all(&media.bytes)?;
+        file.sync_all()?;
+        disk.media.push(DiskMedia {
+            id: media.id.clone(),
+            mime_type: media.mime_type.clone(),
+            path: number.to_string(),
+            sha256: format!("{:x}", Sha256::digest(&media.bytes)),
+        });
+    }
+    let mut file = private_file(&directory.join("article.json"))?;
+    file.set_len(0)?;
+    serde_json::to_writer(&mut file, &disk)?;
+    file.flush()?;
+    file.sync_all()?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 pub struct Reservation {
@@ -343,6 +382,7 @@ impl Storage {
             root: root.to_path_buf(),
         };
         regular_directory(&value.cache())?;
+        regular_directory(&value.saved())?;
         regular_directory(&value.claims())?;
         let _guard = value.lock()?;
         if !value.root.join("storage-policy.json").exists() {
@@ -364,6 +404,12 @@ impl Storage {
     }
     fn cache(&self) -> PathBuf {
         self.root.join("article-cache")
+    }
+    fn saved(&self) -> PathBuf {
+        self.root.join("saved-copies")
+    }
+    fn saved_directory(&self, article_id: &str) -> PathBuf {
+        self.saved().join(key(article_id))
     }
     fn claims(&self) -> PathBuf {
         self.root.join("storage-reservations")
@@ -507,6 +553,18 @@ impl Storage {
             }
         }
         self.save_index(&index)?;
+        // Saved copies publish by renaming a complete hidden directory, so a
+        // hidden leftover is always an interrupted write.
+        for entry in fs::read_dir(self.saved())? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                ensure!(
+                    entry.file_type()?.is_dir(),
+                    "Invalid interrupted saved copy"
+                );
+                fs::remove_dir_all(entry.path())?;
+            }
+        }
         Ok(())
     }
     pub fn require(&self, bytes: u64) -> Result<Reservation> {
@@ -693,6 +751,63 @@ impl Storage {
             },
         );
         self.save_index(&index)?;
+        Ok(true)
+    }
+    /// Whether the reader kept a permanent local copy of this article.
+    pub fn has_saved(&self, article_id: &str) -> Result<bool> {
+        let _guard = self.lock()?;
+        Ok(self.saved_directory(article_id).is_dir())
+    }
+    /// Read a saved local copy. Unlike the cache, a damaged copy is an error
+    /// rather than a silent miss, so the reader never loses it unnoticed.
+    pub fn saved_get(&self, article_id: &str) -> Result<Option<CachedArticle>> {
+        let _guard = self.lock()?;
+        let directory = self.saved_directory(article_id);
+        match fs::symlink_metadata(&directory) {
+            Ok(_) => read_cached(&directory)
+                .map(Some)
+                .context("The saved local copy could not be read"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    /// Keep a permanent local copy, replacing any earlier one atomically.
+    pub fn saved_put(&self, article_id: &str, article: &CachedArticle) -> Result<()> {
+        let _guard = self.lock()?;
+        let name = key(article_id);
+        let staging = self.saved().join(format!(".{name}.pending"));
+        if fs::symlink_metadata(&staging).is_ok() {
+            fs::remove_dir_all(&staging)?;
+        }
+        regular_directory(&staging)?;
+        let result = (|| -> Result<()> {
+            write_article(&staging, article)?;
+            let target = self.saved().join(&name);
+            let previous = self.saved().join(format!(".{name}.previous"));
+            if fs::symlink_metadata(&target).is_ok() {
+                fs::rename(&target, &previous)?;
+            }
+            fs::rename(&staging, &target)?;
+            File::open(self.saved())?.sync_all()?;
+            if fs::symlink_metadata(&previous).is_ok() {
+                fs::remove_dir_all(&previous)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() && fs::symlink_metadata(&staging).is_ok() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        result
+    }
+    /// Remove a saved local copy. Returns whether one existed.
+    pub fn saved_remove(&self, article_id: &str) -> Result<bool> {
+        let _guard = self.lock()?;
+        let directory = self.saved_directory(article_id);
+        if fs::symlink_metadata(&directory).is_err() {
+            return Ok(false);
+        }
+        fs::remove_dir_all(directory)?;
+        File::open(self.saved())?.sync_all()?;
         Ok(true)
     }
 }

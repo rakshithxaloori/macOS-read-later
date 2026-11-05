@@ -398,6 +398,8 @@ fn reader_frame(
                     .is_some_and(|document| !document.blocks.is_empty()),
                 native,
                 fetched_at: Some("2026-10-21T10:00:00Z"),
+                local_copy: false,
+                saving_copy: false,
             },
             actions,
         )
@@ -412,7 +414,26 @@ fn reader_toolbar_obeys_size_limits_and_preserves_native_view_geometry() {
         for size in [15., 27.] {
             let context = context();
             reader_frame(&context, &a, &rich, native, false, size, Vec::new());
-            let ready = reader_frame(&context, &a, &rich, native, false, size, Vec::new());
+            let quiet = reader_frame(&context, &a, &rich, native, false, size, Vec::new());
+            // Text controls stay behind "Aa" until the pointer hovers it.
+            assert!(quiet.reader.font_picker.is_none());
+            assert!(
+                !text_rects(&quiet.output)
+                    .iter()
+                    .any(|(label, _)| label == "A+" || label == "A−")
+            );
+            assert!(
+                node_rect(
+                    &quiet.output,
+                    "Save local copy (keeps this article readable offline)"
+                )
+                .width()
+                    > 0.
+            );
+            let toggle = node_rect(&quiet.output, "Aa").center();
+            let hover = || vec![Event::PointerMoved(toggle)];
+            reader_frame(&context, &a, &rich, native, false, size, hover());
+            let ready = reader_frame(&context, &a, &rich, native, false, size, hover());
             if native {
                 let body = ready.reader.body.expect("native body slot");
                 let picker = ready.reader.font_picker.expect("native font picker slot");
@@ -621,6 +642,8 @@ fn reader_error_details_preserve_the_available_copy_and_report_exact_failure() {
                     error: Some(error),
                     has_copy,
                     fetched_at: None,
+                    local_copy: false,
+                    saving_copy: false,
                     native: false,
                 },
                 actions,

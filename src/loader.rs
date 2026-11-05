@@ -219,6 +219,8 @@ pub enum Command {
         generation: u64,
         id: ArticleId,
         refresh: bool,
+        /// Keep the resulting copy permanently as a saved local copy.
+        keep: bool,
     },
     Cancel,
     Quit,
@@ -258,7 +260,13 @@ struct LoadContext<'a> {
     fetcher: &'a dyn Fetcher,
 }
 impl LoadContext<'_> {
-    async fn load(&self, generation: &Cell<u64>, id: ArticleId, refresh: bool) -> Result<()> {
+    async fn load(
+        &self,
+        generation: &Cell<u64>,
+        id: ArticleId,
+        refresh: bool,
+        keep: bool,
+    ) -> Result<()> {
         let Self {
             c,
             offline,
@@ -275,18 +283,29 @@ impl LoadContext<'_> {
                     generation: generation.get(),
                     body: Box::new(library::body(c, &id)?),
                     fetched_at: None,
+                    local_copy: false,
                 },
             );
+            ensure!(!keep, "Saved local copies need the lean library format");
             return Ok(());
         }
         let storage = Storage::for_database(c)?;
         let epoch = storage.cache_generation(&id.0)?;
-        let retained = if article.archived_at.is_none() {
-            storage.cache_get(&id.0)?
-        } else {
-            None
+        // A saved local copy outlives the cache, archive and the publisher.
+        let saved = storage.saved_get(&id.0)?;
+        let mut local_copy = saved.is_some();
+        let retained = match saved {
+            Some(copy) => Some(copy),
+            None if article.archived_at.is_none() => storage.cache_get(&id.0)?,
+            None => None,
         };
         if let Some(copy) = &retained {
+            if keep && !local_copy {
+                // Reread so a racing delete cannot leave an orphaned copy.
+                library::metadata(c, &id)?;
+                storage.saved_put(&id.0, copy)?;
+                local_copy = true;
+            }
             let fetched_at = Some(copy.fetched_at.clone());
             emit(
                 tx,
@@ -295,6 +314,7 @@ impl LoadContext<'_> {
                     generation: generation.get(),
                     body: Box::new(body(article.clone(), copy.clone())),
                     fetched_at,
+                    local_copy,
                 },
             );
             if !refresh {
@@ -303,7 +323,9 @@ impl LoadContext<'_> {
         }
         ensure!(
             !offline,
-            if retained.is_some() {
+            if local_copy {
+                "Connect to the internet to refresh. Your saved local copy was kept."
+            } else if retained.is_some() {
                 "Connect to the internet to refresh. The existing cached copy was retained."
             } else {
                 "Article is not cached. Connect to the internet and retry."
@@ -330,12 +352,16 @@ impl LoadContext<'_> {
                         media: vec![],
                     }),
                     fetched_at: Some(chrono::Utc::now().to_rfc3339()),
+                    local_copy: false,
                 },
             );
         })
         .await;
         let acquired = match acquired {
             Ok(acquired) => acquired,
+            Err(error) if local_copy => {
+                return Err(error.context("Refresh failed; your saved local copy was kept"));
+            }
             Err(error) if retained.is_some() => {
                 return Err(error.context("Refresh failed; the existing cached copy was retained"));
             }
@@ -360,6 +386,7 @@ impl LoadContext<'_> {
                     generation: generation.get(),
                     fetched_at: Some(copy.fetched_at.clone()),
                     body: Box::new(body(article, copy)),
+                    local_copy,
                 },
             );
             emit(
@@ -385,6 +412,13 @@ impl LoadContext<'_> {
         // Quota rejection leaves the current in-memory view usable. Filesystem or
         // policy errors must remain visible instead of pretending caching worked.
         storage.cache_put(&id.0, epoch, article.archived_at.is_some(), copy.clone())?;
+        // An accepted refresh is at least as complete as the saved copy (the
+        // retention decision above keeps richer copies), so it replaces it.
+        if keep || local_copy {
+            library::metadata(c, &id)?;
+            storage.saved_put(&id.0, &copy)?;
+            local_copy = true;
+        }
         emit(
             tx,
             ctx,
@@ -392,6 +426,7 @@ impl LoadContext<'_> {
                 generation: generation.get(),
                 fetched_at: Some(copy.fetched_at.clone()),
                 body: Box::new(body(article, copy)),
+                local_copy,
             },
         );
         Ok(())
@@ -408,6 +443,7 @@ impl LoadContext<'_> {
                 generation,
                 id,
                 refresh,
+                keep,
             }) = command
             else {
                 if matches!(command, Some(Command::Quit) | None) {
@@ -416,14 +452,14 @@ impl LoadContext<'_> {
                 continue;
             };
             let generation = Cell::new(generation);
-            let work = self.load(&generation, id.clone(), refresh);
+            let work = self.load(&generation, id.clone(), refresh, keep);
             tokio::pin!(work);
             loop {
                 tokio::select! {
                     // Queued navigation wins over a simultaneously ready fetch.
                     biased;
                     next = rx.recv() => {
-                        if let Some(Command::Open { generation: newer, id: next_id, refresh: false }) = &next
+                        if let Some(Command::Open { generation: newer, id: next_id, refresh: false, keep: false }) = &next
                             && next_id == &id {
                             generation.set(*newer);
                             continue;
@@ -585,7 +621,7 @@ mod tests {
             ctx: &ctx,
             fetcher: &Failed,
         }
-        .load(&Cell::new(2), id.clone(), true)
+        .load(&Cell::new(2), id.clone(), true, false)
         .await
         .unwrap_err();
         assert!(format!("{error:#}").contains("publisher failure"));
@@ -607,6 +643,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saved_local_copy_survives_archive_cache_loss_and_offline_until_deleted() {
+        let (_directory, mut c, id, retained) = cached_fixture();
+        let storage = Storage::for_database(&c).unwrap();
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let ctx = egui::Context::default();
+        let context = |c, offline| LoadContext {
+            c,
+            offline,
+            tx: &tx,
+            ctx: &ctx,
+            fetcher: &Failed,
+        };
+        context(&c, true)
+            .load(&Cell::new(1), id.clone(), false, true)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &rx.try_iter().collect::<Vec<_>>()[..],
+            [Event::Body { local_copy: true, body, .. }] if body.html == retained.html
+        ));
+        assert!(storage.has_saved(&id.0).unwrap());
+        // Archive purges the disposable cache; the saved copy stays readable offline.
+        library::update(&c, &id, None, Some(true)).unwrap();
+        storage.clear_cache().unwrap();
+        assert!(storage.cache_get(&id.0).unwrap().is_none());
+        context(&c, true)
+            .load(&Cell::new(2), id.clone(), false, false)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &rx.try_iter().collect::<Vec<_>>()[..],
+            [Event::Body { local_copy: true, body, fetched_at: Some(at), .. }]
+                if body.html == retained.html && at == &retained.fetched_at
+        ));
+        // A failed refresh keeps the saved copy.
+        let error = context(&c, false)
+            .load(&Cell::new(3), id.clone(), true, false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("saved local copy was kept"));
+        assert_eq!(
+            storage.saved_get(&id.0).unwrap().unwrap().html,
+            retained.html
+        );
+        library::delete(&mut c, std::slice::from_ref(&id)).unwrap();
+        assert!(!storage.has_saved(&id.0).unwrap());
+    }
+
+    #[test]
+    fn saved_copy_round_trips_replaces_and_removes() {
+        let (_directory, c, id, retained) = cached_fixture();
+        let storage = Storage::for_database(&c).unwrap();
+        assert!(storage.saved_get(&id.0).unwrap().is_none());
+        let mut copy = retained.clone();
+        copy.media.push(CachedMedia {
+            id: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+        });
+        storage.saved_put(&id.0, &copy).unwrap();
+        let read = storage.saved_get(&id.0).unwrap().unwrap();
+        assert_eq!(read.html, copy.html);
+        assert_eq!(read.media[0].bytes, vec![1, 2, 3]);
+        copy.html = "<p>Replacement</p>".into();
+        copy.media.clear();
+        storage.saved_put(&id.0, &copy).unwrap();
+        let read = storage.saved_get(&id.0).unwrap().unwrap();
+        assert_eq!(read.html, "<p>Replacement</p>");
+        assert!(read.media.is_empty());
+        assert!(storage.saved_remove(&id.0).unwrap());
+        assert!(!storage.saved_remove(&id.0).unwrap());
+        assert!(storage.saved_get(&id.0).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn weaker_refresh_keeps_richer_copy_with_a_separate_attempt_diagnostic() {
         let (_directory, c, id, retained) = cached_fixture();
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
@@ -622,7 +733,7 @@ mod tests {
             ctx: &ctx,
             fetcher: &fetcher,
         }
-        .load(&Cell::new(3), id.clone(), true)
+        .load(&Cell::new(3), id.clone(), true, false)
         .await
         .unwrap();
         let events = rx.try_iter().collect::<Vec<_>>();
@@ -740,6 +851,7 @@ mod tests {
                 generation: 1,
                 id: first.clone(),
                 refresh: false,
+                keep: false,
             })
             .await
             .unwrap();
@@ -750,6 +862,7 @@ mod tests {
                     generation: 2,
                     id: second.clone(),
                     refresh: false,
+                    keep: false,
                 })
                 .await
                 .unwrap();
@@ -785,6 +898,7 @@ mod tests {
                 generation: 1,
                 id: id.clone(),
                 refresh: false,
+                keep: false,
             })
             .await
             .unwrap();
@@ -795,6 +909,7 @@ mod tests {
                     generation: 2,
                     id: id.clone(),
                     refresh: false,
+                    keep: false,
                 })
                 .await
                 .unwrap();
@@ -842,7 +957,7 @@ mod tests {
                 ctx: &ctx,
                 fetcher: &fetcher
             }
-            .load(&Cell::new(3), id.clone(), true)
+            .load(&Cell::new(3), id.clone(), true, false)
             .await
             .is_err()
         );
@@ -977,7 +1092,7 @@ mod tests {
             ctx: &ctx,
             fetcher: &fetcher,
         }
-        .load(&generation, id.clone(), false)
+        .load(&generation, id.clone(), false, false)
         .await
         .unwrap();
         let events = rx.try_iter().collect::<Vec<_>>();
@@ -1036,7 +1151,7 @@ mod tests {
             ctx: &ctx,
             fetcher: &fake,
         }
-        .load(&Cell::new(9), id.clone(), false)
+        .load(&Cell::new(9), id.clone(), false, false)
         .await
         .unwrap_err();
         assert!(error.to_string().contains("not cached"));

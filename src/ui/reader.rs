@@ -17,6 +17,8 @@ pub struct ReaderView<'a> {
     pub error: Option<&'a str>,
     pub has_copy: bool,
     pub fetched_at: Option<&'a str>,
+    pub local_copy: bool,
+    pub saving_copy: bool,
     pub native: bool,
 }
 /// Height of the reader toolbar below the title-bar inset.
@@ -39,6 +41,8 @@ pub fn draw(ui: &mut Ui, view: ReaderView<'_>, actions: &mut Vec<Action>) -> Rea
         error,
         has_copy,
         fetched_at,
+        local_copy,
+        saving_copy,
         native,
     } = view;
     let viewport = ui.max_rect();
@@ -71,30 +75,16 @@ pub fn draw(ui: &mut Ui, view: ReaderView<'_>, actions: &mut Vec<Action>) -> Rea
                             if controls::toolbar_button(ui, Icon::Refresh, if error.is_some() { "Retry article acquisition" } else { "Re-fetch article" }, false).clicked() {
                                 actions.push(Action::Command(Command::Refetch(a.id.clone())));
                             }
+                            if saving_copy {
+                                ui.add_sized(egui::vec2(30., 30.), egui::Spinner::new().size(14.))
+                                    .on_hover_text("Saving local copy…");
+                            } else if controls::toolbar_button(ui, Icon::Download, if local_copy { "Remove local copy" } else { "Save local copy (keeps this article readable offline)" }, local_copy).clicked() {
+                                actions.push(if local_copy { Action::RemoveLocalCopy(a.id.clone()) } else { Action::SaveLocalCopy(a.id.clone()) });
+                            }
                             let (gap, _) = ui.allocate_exact_size(egui::vec2(13., 20.), egui::Sense::hover());
                             ui.painter().line_segment([gap.center_top(), gap.center_bottom()], egui::Stroke::new(1., colors.divider));
                         }
-                        ui.add_enabled_ui(size < 27., |ui| {
-                            if compact_button(ui, "A+", "Increase reader text size").clicked() { actions.push(Action::FontSize((size + 1.).min(27.))); }
-                        });
-                        ui.add_enabled_ui(size > 15., |ui| {
-                            if compact_button(ui, "A−", "Decrease reader text size").clicked() { actions.push(Action::FontSize((size - 1.).max(15.))); }
-                        });
-                        if native {
-                            layout.font_picker = Some(ui.allocate_exact_size(egui::vec2(134., 28.), egui::Sense::hover()).0);
-                        } else {
-                            egui::ComboBox::from_id_salt("reader-font").selected_text(font.family()).width(134.).show_ui(ui, |ui| {
-                                for (label, choices) in [
-                                    ("Classic", [ReaderFont::Georgia, ReaderFont::Baskerville]),
-                                    ("Modern", [ReaderFont::AvenirNext, ReaderFont::HelveticaNeue]),
-                                ] {
-                                    ui.label(RichText::new(label).small().color(colors.muted));
-                                    for choice in choices {
-                                        if ui.selectable_label(font == choice, choice.family()).clicked() { actions.push(Action::ReaderFont(choice)); }
-                                    }
-                                }
-                            }).response.on_hover_text("Reader font: two classic and two modern styles");
-                        }
+                        text_controls(ui, size, font, native, &mut layout, actions);
                     });
                 });
             });
@@ -195,6 +185,105 @@ pub fn draw(ui: &mut Ui, view: ReaderView<'_>, actions: &mut Vec<Action>) -> Rea
         }
     });
     layout
+}
+
+/// Font style and size stay behind an "Aa" button until the pointer hovers it,
+/// so the toolbar stays quiet while reading. Keyboard focus, an open font menu
+/// or a click on "Aa" keep them visible too.
+fn text_controls(
+    ui: &mut Ui,
+    size: f32,
+    font: ReaderFont,
+    native: bool,
+    layout: &mut ReaderLayout,
+    actions: &mut Vec<Action>,
+) {
+    const GRACE: f64 = 0.6;
+    let colors = crate::theme::palette(ui.ctx());
+    let id = egui::Id::new("reader-text-controls");
+    let (previous, pinned, focused, left_at): (Option<egui::Rect>, bool, bool, f64) = ui
+        .ctx()
+        .data(|d| d.get_temp(id))
+        .unwrap_or((None, false, false, f64::NEG_INFINITY));
+    let now = ui.input(|i| i.time);
+    let hovered = previous
+        .zip(ui.input(|i| i.pointer.latest_pos()))
+        .is_some_and(|(rect, pointer)| rect.expand(6.).contains(pointer));
+    let popup = !native && egui::Popup::is_any_open(ui.ctx());
+    let held = hovered || pinned || focused || popup;
+    let left_at = if held { now } else { left_at };
+    let lingering = now - left_at < GRACE;
+    let expanded = held || lingering;
+    if lingering && !held {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(GRACE - (now - left_at)));
+    }
+    let toggle = compact_button(ui, "Aa", "Text style and size");
+    let mut rect = toggle.rect;
+    let mut any_focus = toggle.has_focus();
+    // A click elsewhere unpins; "Aa" itself toggles for keyboard and VoiceOver.
+    let clicked_away = ui.input(|i| i.pointer.any_click()) && !hovered && !toggle.hovered();
+    let pinned = (pinned && !clicked_away) ^ toggle.clicked();
+    if expanded || pinned {
+        let increase = ui
+            .add_enabled_ui(size < 27., |ui| {
+                compact_button(ui, "A+", "Increase reader text size")
+            })
+            .inner;
+        if increase.clicked() {
+            actions.push(Action::FontSize((size + 1.).min(27.)));
+        }
+        let decrease = ui
+            .add_enabled_ui(size > 15., |ui| {
+                compact_button(ui, "A−", "Decrease reader text size")
+            })
+            .inner;
+        if decrease.clicked() {
+            actions.push(Action::FontSize((size - 1.).max(15.)));
+        }
+        any_focus |= increase.has_focus() || decrease.has_focus();
+        rect = rect.union(increase.rect).union(decrease.rect);
+        if native {
+            let picker = ui
+                .allocate_exact_size(egui::vec2(134., 28.), egui::Sense::hover())
+                .0;
+            layout.font_picker = Some(picker);
+            rect = rect.union(picker);
+        } else {
+            let combo = egui::ComboBox::from_id_salt("reader-font")
+                .selected_text(font.family())
+                .width(134.)
+                .show_ui(ui, |ui| {
+                    for (label, choices) in [
+                        ("Classic", [ReaderFont::Georgia, ReaderFont::Baskerville]),
+                        (
+                            "Modern",
+                            [ReaderFont::AvenirNext, ReaderFont::HelveticaNeue],
+                        ),
+                    ] {
+                        ui.label(RichText::new(label).small().color(colors.muted));
+                        for choice in choices {
+                            if ui
+                                .selectable_label(font == choice, choice.family())
+                                .clicked()
+                            {
+                                actions.push(Action::ReaderFont(choice));
+                            }
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Reader font: two classic and two modern styles");
+            any_focus |= combo.has_focus();
+            rect = rect.union(combo.rect);
+        }
+    }
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(id, (Some(rect), pinned, any_focus, left_at)));
+    // The pointer only reaches the revealed controls on a later frame.
+    if (expanded || pinned) != previous.is_some_and(|p| p.width() > toggle.rect.width() + 1.) {
+        ui.ctx().request_repaint();
+    }
 }
 
 fn compact_button(ui: &mut Ui, label: &str, hint: &str) -> egui::Response {

@@ -88,6 +88,9 @@ pub struct App {
     body_loading: bool,
     body_error: Option<String>,
     fetched_at: Option<String>,
+    /// The selected article is shown from a saved local copy.
+    local_copy: bool,
+    saving_copy: bool,
     has_more: bool,
     matching_count: u32,
     logos: std::collections::HashMap<String, egui::TextureHandle>,
@@ -210,6 +213,8 @@ impl App {
             body_loading: false,
             body_error: None,
             fetched_at: None,
+            local_copy: false,
+            saving_copy: false,
             has_more: false,
             matching_count: 0,
             repaint: cc.egui_ctx.clone(),
@@ -287,7 +292,10 @@ impl App {
             }
             return;
         }
-        let is_body_request = matches!(&c, Command::Body { .. } | Command::RefreshBody { .. });
+        let is_body_request = matches!(
+            &c,
+            Command::Body { .. } | Command::RefreshBody { .. } | Command::SaveLocalCopy { .. }
+        );
         if !matches!(
             c,
             Command::List { .. }
@@ -296,6 +304,8 @@ impl App {
                 | Command::CancelBody
                 | Command::RefreshBody { .. }
                 | Command::RefreshSelected { .. }
+                | Command::SaveLocalCopy { .. }
+                | Command::RemoveLocalCopy(_)
                 | Command::FetchedMetadata(_)
                 | Command::Summary
                 | Command::Pdf(_)
@@ -477,6 +487,8 @@ impl App {
         self.body_loading = true;
         self.body_error = None;
         self.fetched_at = None;
+        self.local_copy = false;
+        self.saving_copy = false;
         if let Some(article) = self.rows.iter().find(|a| a.id == id).cloned().or_else(|| {
             self.selected
                 .as_ref()
@@ -609,6 +621,7 @@ impl App {
                     generation,
                     mut body,
                     fetched_at,
+                    local_copy,
                 } => {
                     if generation == self.body_generation {
                         if let Some(selected) = self
@@ -631,6 +644,8 @@ impl App {
                         self.send(Command::FetchedMetadata(Box::new(body.article.clone())));
                         self.selected = Some(*body);
                         self.fetched_at = fetched_at;
+                        self.local_copy = local_copy;
+                        self.saving_copy = false;
                         self.body_error = None;
                         self.native_dirty = true;
                         self.body_loading = false;
@@ -645,8 +660,16 @@ impl App {
                         && self.selected.as_ref().is_some_and(|b| b.article.id == id)
                     {
                         self.body_loading = false;
+                        self.saving_copy = false;
                         self.body_error = Some(message);
                         self.native_dirty = true;
+                    }
+                }
+                Event::LocalCopyRemoved(id) => {
+                    if self.selected.as_ref().is_some_and(|b| b.article.id == id) {
+                        self.local_copy = false;
+                        self.native_dirty = true;
+                        self.notice = "Local copy removed".into();
                     }
                 }
                 Event::SelectedMetadata {
@@ -795,6 +818,9 @@ impl App {
         match action {
             Action::Navigate(v) => {
                 self.rows.clear();
+                // Feed mode is a temporary drill-in from the Feeds tab.
+                self.settings.inbox.feed.clear();
+                self.settings.inbox.feed_title.clear();
                 self.view = v;
                 self.clear_selection();
                 self.selecting = false;
@@ -818,6 +844,8 @@ impl App {
                 self.body_loading = false;
                 self.body_error = None;
                 self.fetched_at = None;
+                self.local_copy = false;
+                self.saving_copy = false;
                 self.send(Command::CancelBody);
             }
             Action::Query(q) => {
@@ -879,6 +907,15 @@ impl App {
                     ..Default::default()
                 };
                 self.dialog = Some(Dialog::Save);
+            }
+            Action::OpenFeed { id, title } => {
+                let mut q = self.settings.inbox.clone();
+                q.feed = id;
+                q.feed_title = title;
+                q.publication.clear();
+                q.search.clear();
+                self.apply(Action::Navigate(View::Inbox), ctx);
+                self.apply(Action::Query(q), ctx);
             }
             Action::FeedDialog => {
                 if let Some(view) = &self.native_reader {
@@ -966,6 +1003,20 @@ impl App {
                 self.selecting = false;
                 self.view = View::Magazines;
             }
+            Action::SaveLocalCopy(id) => {
+                if self.selected.as_ref().is_some_and(|b| b.article.id == id) {
+                    // A new generation keeps a racing open from overwriting the result.
+                    self.body_generation += 1;
+                    self.saving_copy = true;
+                    self.body_error = None;
+                    self.native_dirty = true;
+                    self.send(Command::SaveLocalCopy {
+                        generation: self.body_generation,
+                        id,
+                    });
+                }
+            }
+            Action::RemoveLocalCopy(id) => self.send(Command::RemoveLocalCopy(id)),
             Action::FontSize(size) => {
                 self.settings.reader_size = size;
                 self.native_dirty = true;
@@ -1296,10 +1347,17 @@ impl eframe::App for App {
                     metadata,
                     read: article.read_at.is_some(),
                     archived: article.archived_at.is_some(),
-                    fetch_info: self
-                        .fetched_at
-                        .as_ref()
-                        .map(|at| format!("Fetched {}", crate::domain::date_label(at))),
+                    fetch_info: self.fetched_at.as_ref().map(|at| {
+                        format!(
+                            "{}Fetched {}",
+                            if self.local_copy {
+                                "Saved locally · "
+                            } else {
+                                ""
+                            },
+                            crate::domain::date_label(at)
+                        )
+                    }),
                     notice,
                 },
                 self.settings.reader_font,
@@ -1491,6 +1549,8 @@ impl eframe::App for App {
                             loading: self.body_loading,
                             error: self.body_error.as_deref(),
                             fetched_at: self.fetched_at.as_deref(),
+                            local_copy: self.local_copy,
+                            saving_copy: self.saving_copy,
                             has_copy: self
                                 .selected
                                 .as_ref()

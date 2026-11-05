@@ -45,6 +45,12 @@ pub enum Command {
         generation: u64,
         id: ArticleId,
     },
+    /// Keep the article's reading copy permanently, fetching it if needed.
+    SaveLocalCopy {
+        generation: u64,
+        id: ArticleId,
+    },
+    RemoveLocalCopy(ArticleId),
     FetchedMetadata(Box<Article>),
     PreparedDraft {
         request: u64,
@@ -79,6 +85,7 @@ pub enum Command {
         query: Query,
         expected: u32,
     },
+    ArchiveMatching(Query),
     Refetch(ArticleId),
     RefetchAll,
     AddFeed(String),
@@ -138,7 +145,10 @@ pub enum Event {
         generation: u64,
         body: Box<ArticleBody>,
         fetched_at: Option<String>,
+        /// The copy shown is a saved local copy that never expires.
+        local_copy: bool,
     },
+    LocalCopyRemoved(ArticleId),
     BodyError {
         generation: u64,
         id: ArticleId,
@@ -262,6 +272,7 @@ impl Backend {
                             generation,
                             id: id.clone(),
                             refresh: false,
+                            keep: false,
                         })
                         .is_err()
                     {
@@ -274,13 +285,23 @@ impl Backend {
                     }
                     continue;
                 }
-                if let Command::RefreshBody { generation, id } = command {
+                let (open, command) = match command {
+                    Command::RefreshBody { generation, id } => {
+                        (Some((generation, id, true, false)), None)
+                    }
+                    Command::SaveLocalCopy { generation, id } => {
+                        (Some((generation, id, false, true)), None)
+                    }
+                    command => (None, Some(command)),
+                };
+                if let Some((generation, id, refresh, keep)) = open {
                     if reader
                         .commands
                         .try_send(crate::loader::Command::Open {
                             generation,
                             id: id.clone(),
-                            refresh: true,
+                            refresh,
+                            keep,
                         })
                         .is_err()
                     {
@@ -293,6 +314,9 @@ impl Backend {
                     }
                     continue;
                 }
+                let Some(command) = command else {
+                    continue;
+                };
                 if matches!(command, Command::CancelBody) {
                     let _ = reader.commands.try_send(crate::loader::Command::Cancel);
                     continue;
@@ -445,9 +469,16 @@ fn dispatch(c: &mut rusqlite::Connection, cmd: Command) -> anyhow::Result<Vec<Ev
             generation,
             body: Box::new(library::body(c, &id)?),
             fetched_at: None,
+            local_copy: false,
         },
         Command::CancelBody => return Ok(vec![]),
-        Command::RefreshBody { .. } => return Ok(vec![]),
+        Command::RefreshBody { .. } | Command::SaveLocalCopy { .. } => return Ok(vec![]),
+        Command::RemoveLocalCopy(id) => {
+            if db_compat::is_lean(c)? && crate::storage::database_path(c)?.is_some() {
+                crate::storage::Storage::for_database(c)?.saved_remove(&id.0)?;
+            }
+            Event::LocalCopyRemoved(id)
+        }
         Command::RefreshSelected { generation, id } => {
             let article = match library::metadata(c, &id) {
                 Ok(a) => Some(a),
@@ -515,6 +546,10 @@ fn dispatch(c: &mut rusqlite::Connection, cmd: Command) -> anyhow::Result<Vec<Ev
         }
         Command::DeleteMatching { query, expected } => {
             library::delete_matching(c, &query, expected)?;
+            Event::Changed
+        }
+        Command::ArchiveMatching(query) => {
+            library::archive_matching(c, &query)?;
             Event::Changed
         }
         Command::Refetch(id) => {

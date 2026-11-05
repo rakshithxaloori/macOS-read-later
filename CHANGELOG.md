@@ -7,6 +7,22 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
+### Added
+- Grouped publications have a redesigned row with an initial tile, a count and
+  a hover menu with "Archive all articles in this publication" and "Delete
+  all…". The same archive action is in the list header menu inside a
+  publication or feed.
+- Clicking a feed in Feeds opens all of that feed's articles, read or unread,
+  archived or not.
+- Save a local copy of an article from the reader toolbar so it stays readable
+  offline; it is never evicted and can be removed again.
+- The reader's text style and size controls sit behind an "Aa" button.
+
+### Fixed
+- Links in the reader show the pointing-hand cursor.
+
 ### Changed
 - Release builds use fat link-time optimization with a single codegen unit.
   The app shrinks from 43.4 MB to about 30.6 MB and the download from 21.7 MB
