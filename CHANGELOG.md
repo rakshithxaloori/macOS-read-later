@@ -7,6 +7,19 @@ version for fixes. Each release is a `vX.Y.Z` tag on `main`.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-05
+
+### Added
+- Grouped publications have a redesigned row with an initial tile, a count and
+  a hover menu with "Archive all articles in this publication" and "Delete
+  all…". The same archive action is in the list header menu inside a
+  publication or feed.
+- Clicking a feed in Feeds opens all of that feed's articles, read or unread,
+  archived or not.
+
+### Fixed
+- Links in the reader show the pointing-hand cursor.
+
 ## [0.3.4] - 2026-11-04
 
 ### Changed

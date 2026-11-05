@@ -795,6 +795,9 @@ impl App {
         match action {
             Action::Navigate(v) => {
                 self.rows.clear();
+                // Feed mode is a temporary drill-in from the Feeds tab.
+                self.settings.inbox.feed.clear();
+                self.settings.inbox.feed_title.clear();
                 self.view = v;
                 self.clear_selection();
                 self.selecting = false;
@@ -879,6 +882,15 @@ impl App {
                     ..Default::default()
                 };
                 self.dialog = Some(Dialog::Save);
+            }
+            Action::OpenFeed { id, title } => {
+                let mut q = self.settings.inbox.clone();
+                q.feed = id;
+                q.feed_title = title;
+                q.publication.clear();
+                q.search.clear();
+                self.apply(Action::Navigate(View::Inbox), ctx);
+                self.apply(Action::Query(q), ctx);
             }
             Action::FeedDialog => {
                 if let Some(view) = &self.native_reader {
