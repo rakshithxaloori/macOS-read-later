@@ -79,6 +79,7 @@ pub enum Command {
         query: Query,
         expected: u32,
     },
+    ArchiveMatching(Query),
     Refetch(ArticleId),
     RefetchAll,
     AddFeed(String),
@@ -515,6 +516,10 @@ fn dispatch(c: &mut rusqlite::Connection, cmd: Command) -> anyhow::Result<Vec<Ev
         }
         Command::DeleteMatching { query, expected } => {
             library::delete_matching(c, &query, expected)?;
+            Event::Changed
+        }
+        Command::ArchiveMatching(query) => {
+            library::archive_matching(c, &query)?;
             Event::Changed
         }
         Command::Refetch(id) => {

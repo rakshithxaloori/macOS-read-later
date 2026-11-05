@@ -1807,6 +1807,80 @@ pub mod native {
         font_picker.setHidden(true);
         font_picker
     }
+    // Shows the pointing-hand cursor over links. winit's full-window cursor
+    // rect otherwise wins over NSTextView's own link cursor.
+    define_class!(
+        #[unsafe(super(NSTextView, objc2_app_kit::NSText, NSView, objc2_app_kit::NSResponder, NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "ReadingListReaderTextView"]
+        struct ReaderTextView;
+        impl ReaderTextView {
+            #[unsafe(method(mouseMoved:))]
+            fn mouse_moved(&self, event: &objc2_app_kit::NSEvent) {
+                let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
+                self.link_cursor(event);
+            }
+            #[unsafe(method(cursorUpdate:))]
+            fn cursor_update(&self, event: &objc2_app_kit::NSEvent) {
+                let _: () = unsafe { msg_send![super(self), cursorUpdate: event] };
+                self.link_cursor(event);
+            }
+        }
+    );
+    impl ReaderTextView {
+        fn create(mtm: MainThreadMarker, bounds: NSRect) -> Retained<NSTextView> {
+            let view: Retained<Self> =
+                unsafe { msg_send![Self::alloc(mtm), initWithFrame: bounds] };
+            use objc2_app_kit::NSTrackingAreaOptions as O;
+            let area = unsafe {
+                objc2_app_kit::NSTrackingArea::initWithRect_options_owner_userInfo(
+                    objc2_app_kit::NSTrackingArea::alloc(),
+                    bounds,
+                    O::MouseMoved | O::CursorUpdate | O::ActiveInKeyWindow | O::InVisibleRect,
+                    Some(&view),
+                    None,
+                )
+            };
+            view.addTrackingArea(&area);
+            view.into_super()
+        }
+        fn link_cursor(&self, event: &objc2_app_kit::NSEvent) {
+            if self.link_at(event) {
+                objc2_app_kit::NSCursor::pointingHandCursor().set();
+            }
+        }
+        fn link_at(&self, event: &objc2_app_kit::NSEvent) -> bool {
+            let point = self.convertPoint_fromView(event.locationInWindow(), None);
+            let origin = self.textContainerOrigin();
+            let p = NSPoint::new(point.x - origin.x, point.y - origin.y);
+            unsafe {
+                let layout: Option<Retained<AnyObject>> = msg_send![self, layoutManager];
+                let container: Option<Retained<AnyObject>> = msg_send![self, textContainer];
+                let storage: Option<Retained<AnyObject>> = msg_send![self, textStorage];
+                let (Some(layout), Some(container), Some(storage)) = (layout, container, storage)
+                else {
+                    return false;
+                };
+                let glyph: usize =
+                    msg_send![&layout, glyphIndexForPoint: p, inTextContainer: &*container];
+                let rect: NSRect = msg_send![&layout, boundingRectForGlyphRange: NSRange::new(glyph, 1), inTextContainer: &*container];
+                if p.x < rect.origin.x
+                    || p.y < rect.origin.y
+                    || p.x > rect.origin.x + rect.size.width
+                    || p.y > rect.origin.y + rect.size.height
+                {
+                    return false;
+                }
+                let index: usize = msg_send![&layout, characterIndexForGlyphAtIndex: glyph];
+                let length: usize = msg_send![&storage, length];
+                if index >= length {
+                    return false;
+                }
+                let value: Option<Retained<AnyObject>> = msg_send![&storage, attribute: NSLinkAttributeName, atIndex: index, effectiveRange: std::ptr::null_mut::<NSRange>()];
+                value.is_some()
+            }
+        }
+    }
     struct ReaderDocumentIvars {
         appearance: Cell<Appearance>,
         divider: Cell<f64>,
@@ -2467,7 +2541,7 @@ pub mod native {
                 .ok_or("Missing AppKit view")?;
             let bounds = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(780.0, 900.0));
             let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), bounds);
-            let text = NSTextView::initWithFrame(NSTextView::alloc(mtm), bounds);
+            let text = ReaderTextView::create(mtm, bounds);
             configure_text(&text);
             let document_view = ReaderDocumentView::alloc(mtm).set_ivars(ReaderDocumentIvars {
                 appearance: Cell::new(Appearance::Light),

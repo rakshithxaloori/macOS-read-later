@@ -312,8 +312,16 @@ fn feed_row(
     let wide = ui.available_width() >= 600.;
     let background = ui.painter().add(egui::Shape::Noop);
     let top = ui.cursor().top();
-    let (rect, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::hover());
+    let (rect, row) =
+        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::click());
+    if row.clicked() {
+        actions.push(Action::OpenFeed {
+            id: feed.id.0.clone(),
+            title: feed.title.clone(),
+        });
+    }
+    row.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Show all articles from this feed");
     let painter = ui.painter().clone();
     let paused = !feed.active;
     let tile = egui::Rect::from_min_size(

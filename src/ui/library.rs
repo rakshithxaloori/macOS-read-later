@@ -84,6 +84,22 @@ pub fn draw(ui: &mut Ui, state: State<'_>, actions: &mut Vec<Action>) -> f32 {
                                 actions.push(Action::Command(Command::RefetchAll));
                                 ui.close();
                             }
+                            if (state.grouped && !q.publication.is_empty() || !q.feed.is_empty())
+                                && q.scope != crate::domain::Scope::Archive
+                                && controls::action(
+                                    ui,
+                                    if q.feed.is_empty() {
+                                        "Archive all articles in this publication"
+                                    } else {
+                                        "Archive all articles in this feed"
+                                    },
+                                    ButtonKind::Quiet,
+                                )
+                                .clicked()
+                            {
+                                actions.push(Action::Command(Command::ArchiveMatching(q.clone())));
+                                ui.close();
+                            }
                             if state.grouped
                                 && !q.publication.is_empty()
                                 && controls::action(
@@ -101,8 +117,9 @@ pub fn draw(ui: &mut Ui, state: State<'_>, actions: &mut Vec<Action>) -> f32 {
                             }
                         });
                     let unread = q.read == ReadFilter::Unread;
-                    if let Some(choice) =
-                        controls::segmented(ui, &["Unread", "Read"], usize::from(!unread))
+                    if q.feed.is_empty()
+                        && let Some(choice) =
+                            controls::segmented(ui, &["Unread", "Read"], usize::from(!unread))
                     {
                         q.read = if choice == 0 {
                             ReadFilter::Unread
@@ -230,7 +247,22 @@ pub fn draw(ui: &mut Ui, state: State<'_>, actions: &mut Vec<Action>) -> f32 {
                     egui::StrokeKind::Outside,
                 );
             }
-            if state.grouped && !q.publication.is_empty() {
+            if !q.feed.is_empty() {
+                ui.horizontal(|ui| {
+                    if controls::icon_button(ui, Icon::ArrowLeft, "Back to feeds", false).clicked()
+                    {
+                        actions.push(Action::Navigate(View::Feeds));
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{} · all articles", q.feed_title))
+                                .size(12.)
+                                .strong(),
+                        )
+                        .truncate(),
+                    );
+                });
+            } else if state.grouped && !q.publication.is_empty() {
                 ui.horizontal(|ui| {
                     if controls::icon_button(ui, Icon::ArrowLeft, "Back to publications", false)
                         .clicked()
@@ -312,75 +344,137 @@ pub fn draw(ui: &mut Ui, state: State<'_>, actions: &mut Vec<Action>) -> f32 {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.;
-            if state.grouped && state.query.publication.is_empty() && !state.publications.is_empty()
+            if state.grouped
+                && state.query.publication.is_empty()
+                && state.query.feed.is_empty()
+                && !state.publications.is_empty()
             {
+                ui.add_space(6.);
+                let archivable = state.query.scope != crate::domain::Scope::Archive;
                 for (host, count) in state.publications {
-                    let (rect, response) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 72.), Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(rect, 0., colors.selected);
+                    let (outer, response) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 60.), Sense::click());
+                    let rect = outer.shrink2(vec2(8., 2.));
+                    let menu_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - 22., rect.center().y),
+                        vec2(28., 28.),
+                    );
+                    let hovered = ui.rect_contains_pointer(outer);
+                    if hovered {
+                        ui.painter().rect_filled(rect, 10., colors.hover);
                     }
-                    let mark = egui::Rect::from_min_size(rect.min + vec2(16., 18.), vec2(32., 32.));
-                    ui.painter().rect_filled(mark, 8., colors.selected);
-                    icons::draw(ui, mark.shrink(7.), Icon::Book, colors.green);
+                    let tile = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + 10., rect.center().y - 18.),
+                        vec2(36., 36.),
+                    );
+                    ui.painter().rect_filled(tile, 10., colors.selected);
+                    let initial = host
+                        .chars()
+                        .find(|c| c.is_alphanumeric())
+                        .unwrap_or('·')
+                        .to_uppercase()
+                        .to_string();
+                    ui.painter().text(
+                        tile.center() + vec2(0., 1.),
+                        Align2::CENTER_CENTER,
+                        initial,
+                        FontId::new(18., egui::FontFamily::Name("Georgia".into())),
+                        colors.green,
+                    );
+                    let text_x = tile.right() + 12.;
                     let mut title = egui::text::LayoutJob::simple(
                         host.clone(),
-                        FontId::proportional(13.),
+                        FontId::new(13.5, egui::FontFamily::Name("System Semibold".into())),
                         colors.ink,
-                        (rect.width() - 128.).max(20.),
+                        (menu_rect.left() - 52. - text_x).max(20.),
                     );
                     title.wrap.max_rows = 1;
                     let title = ui.fonts_mut(|f| f.layout_job(title));
-                    ui.painter()
-                        .galley(rect.min + vec2(60., 17.), title, colors.ink);
+                    ui.painter().galley(
+                        egui::pos2(text_x, rect.center().y - 17.),
+                        title,
+                        colors.ink,
+                    );
                     ui.painter().text(
-                        rect.min + vec2(60., 40.),
+                        egui::pos2(text_x, rect.center().y + 3.),
                         Align2::LEFT_TOP,
-                        format!("{count} articles"),
-                        FontId::proportional(11.),
+                        if *count == 1 {
+                            "1 article".into()
+                        } else {
+                            format!("{count} articles")
+                        },
+                        FontId::proportional(11.5),
                         colors.muted,
                     );
-                    icons::draw(
-                        ui,
-                        egui::Rect::from_center_size(
-                            egui::pos2(rect.right() - 55., rect.center().y),
-                            vec2(15., 15.),
+                    let badge_text = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(count.to_string(), FontId::proportional(11.), colors.muted)
+                    });
+                    let badge = egui::Rect::from_center_size(
+                        egui::pos2(
+                            menu_rect.left() - 8. - (badge_text.size().x + 14.) / 2.,
+                            rect.center().y,
                         ),
-                        Icon::ChevronRight,
+                        vec2(badge_text.size().x + 14., 20.),
+                    );
+                    ui.painter().rect_filled(badge, 10., colors.soft);
+                    ui.painter().galley(
+                        badge.center() - badge_text.size() / 2.,
+                        badge_text,
                         colors.muted,
                     );
-                    let menu_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.right() - 44., rect.top() + 20.),
-                        vec2(30., 30.),
-                    );
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
-                        let more = controls::icon_button(
-                            ui,
-                            Icon::More,
-                            &format!("Actions for {host}"),
-                            false,
-                        );
-                        egui::Popup::menu(&more)
-                            .align(egui::emath::RectAlign::BOTTOM_END)
-                            .align_alternatives(&[])
-                            .show(|ui| {
-                                if controls::action(
-                                    ui,
-                                    "Delete matching articles",
-                                    ButtonKind::Danger,
-                                )
-                                .clicked()
-                                {
+                    let menu_id = ui.id().with(("publication-menu", host));
+                    let menu_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
+                    if hovered || menu_open {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
+                            let more = controls::icon_button(
+                                ui,
+                                Icon::More,
+                                &format!("Actions for {host}"),
+                                false,
+                            );
+                            egui::Popup::menu(&more)
+                                .id(menu_id)
+                                .align(egui::emath::RectAlign::BOTTOM_END)
+                                .align_alternatives(&[])
+                                .show(|ui| {
                                     let mut q = state.query.clone();
                                     q.publication = host.clone();
-                                    actions.push(Action::ConfirmDeleteMatching {
-                                        query: q,
-                                        expected: *count,
-                                    });
-                                    ui.close();
-                                }
-                            });
-                    });
+                                    if archivable
+                                        && controls::action(
+                                            ui,
+                                            "Archive all articles in this publication",
+                                            ButtonKind::Quiet,
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(Action::Command(Command::ArchiveMatching(
+                                            q.clone(),
+                                        )));
+                                        ui.close();
+                                    }
+                                    if controls::action(
+                                        ui,
+                                        "Delete all articles in this publication",
+                                        ButtonKind::Danger,
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(Action::ConfirmDeleteMatching {
+                                            query: q,
+                                            expected: *count,
+                                        });
+                                        ui.close();
+                                    }
+                                });
+                        });
+                    } else {
+                        icons::draw(
+                            ui,
+                            egui::Rect::from_center_size(menu_rect.center(), vec2(14., 14.)),
+                            Icon::ChevronRight,
+                            colors.muted,
+                        );
+                    }
                     if response.clicked()
                         && !ui
                             .ctx()
@@ -392,10 +486,6 @@ pub fn draw(ui: &mut Ui, state: State<'_>, actions: &mut Vec<Action>) -> f32 {
                         actions.push(Action::Query(q));
                     }
                     controls::focus(ui, &response);
-                    ui.painter().line_segment(
-                        [rect.left_bottom(), rect.right_bottom()],
-                        egui::Stroke::new(1., colors.divider),
-                    );
                 }
                 return;
             }

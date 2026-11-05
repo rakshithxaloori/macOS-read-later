@@ -44,13 +44,24 @@ pub enum Action {
     ChooseExport,
     SaveDialog,
     FeedDialog,
+    /// Show every article from one feed, regardless of status.
+    OpenFeed {
+        id: String,
+        title: String,
+    },
     SelectMagazine,
     SelectDelete,
     CancelSelection,
-    ShowDetails { title: String, message: String },
+    ShowDetails {
+        title: String,
+        message: String,
+    },
     ToggleSelection(ArticleId),
     ConfirmDelete(Vec<ArticleId>),
-    ConfirmDeleteMatching { query: Query, expected: u32 },
+    ConfirmDeleteMatching {
+        query: Query,
+        expected: u32,
+    },
     Group(bool),
     DraftDialog,
     FontSize(f32),

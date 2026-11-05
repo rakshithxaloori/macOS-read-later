@@ -86,6 +86,12 @@ pub struct Query {
     pub ascending: bool,
     pub search: String,
     pub publication: String,
+    /// Feed id. When set, the list shows every article from that feed,
+    /// regardless of read or archive status.
+    #[serde(default)]
+    pub feed: String,
+    #[serde(default)]
+    pub feed_title: String,
 }
 impl Query {
     pub fn for_scope(scope: Scope) -> Self {
@@ -101,6 +107,8 @@ impl Query {
             ascending: false,
             search: String::new(),
             publication: String::new(),
+            feed: String::new(),
+            feed_title: String::new(),
         }
     }
     pub fn sort_by(&mut self, sort: Sort) {

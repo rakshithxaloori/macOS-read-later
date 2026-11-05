@@ -3,8 +3,9 @@ use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 const FILTER: &str = "a.user_id=?1 AND a.deleted_at IS NULL
-AND CASE WHEN ?2='archive' THEN a.archived_at IS NOT NULL ELSE a.archived_at IS NULL END
-AND CASE WHEN ?3='unread' THEN a.read_at IS NULL ELSE a.read_at IS NOT NULL END
+AND (?7<>'' OR CASE WHEN ?2='archive' THEN a.archived_at IS NOT NULL ELSE a.archived_at IS NULL END)
+AND (?7<>'' OR CASE WHEN ?3='unread' THEN a.read_at IS NULL ELSE a.read_at IS NOT NULL END)
+AND (?7='' OR EXISTS(SELECT 1 FROM sources f WHERE f.user_id=a.user_id AND f.article_id=a.id AND f.kind='rss' AND substr(f.source_key,1,length(?7)+1)=?7||':'))
 AND (?4='' OR instr(lower(a.title || ' ' || coalesce(a.author,'') || ' ' || a.url || ' ' || a.site || ' ' || a.excerpt),lower(?4))>0)
 AND (?5='' OR publication_hostname(a.url)=?5)
 AND (?6='all' OR (?6='saved')=EXISTS(SELECT 1 FROM sources s WHERE s.user_id=a.user_id AND s.article_id=a.id AND s.kind<>'rss'))";
@@ -56,7 +57,7 @@ fn article_row(r: &Row<'_>) -> rusqlite::Result<Article> {
         logo_url: r.get(17)?,
     })
 }
-fn query_values(q: &Query) -> [String; 6] {
+fn query_values(q: &Query) -> [String; 7] {
     [
         OWNER.into(),
         if q.scope == Scope::Archive {
@@ -79,22 +80,26 @@ fn query_values(q: &Query) -> [String; 6] {
             Origin::Rss => "discovered",
         }
         .into(),
+        q.feed.clone(),
     ]
 }
 pub fn articles(c: &Connection, q: &Query, offset: usize) -> Result<Vec<Article>> {
     ensure!(
-        q.search.len() <= 300 && q.publication.len() <= 500 && offset <= 1_000_000,
+        q.search.len() <= 300
+            && q.publication.len() <= 500
+            && q.feed.len() <= 100
+            && offset <= 1_000_000,
         "Invalid article query"
     );
     let sql = format!(
-        "SELECT {COLUMNS} FROM articles a WHERE {FILTER} ORDER BY {} {} NULLS LAST,a.saved_at DESC,a.id LIMIT 60 OFFSET ?7",
+        "SELECT {COLUMNS} FROM articles a WHERE {FILTER} ORDER BY {} {} NULLS LAST,a.saved_at DESC,a.id LIMIT 60 OFFSET ?8",
         q.sort.sql(),
         if q.ascending { "ASC" } else { "DESC" }
     );
     let v = query_values(q);
     Ok(c.prepare(&sql)?
         .query_map(
-            params![v[0], v[1], v[2], v[3], v[4], v[5], offset as i64],
+            params![v[0], v[1], v[2], v[3], v[4], v[5], v[6], offset as i64],
             article_row,
         )?
         .collect::<rusqlite::Result<_>>()?)
@@ -103,13 +108,13 @@ pub fn publications(c: &Connection, q: &Query) -> Result<Vec<(String, u32)>> {
     let mut q = q.clone();
     q.publication.clear();
     let v = query_values(&q);
-    Ok(c.prepare(&format!("SELECT publication_hostname(a.url),count(*) FROM articles a WHERE {FILTER} GROUP BY publication_hostname(a.url) ORDER BY publication_hostname(a.url)"))?.query_map(params![v[0],v[1],v[2],v[3],v[4],v[5]],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+    Ok(c.prepare(&format!("SELECT publication_hostname(a.url),count(*) FROM articles a WHERE {FILTER} GROUP BY publication_hostname(a.url) ORDER BY publication_hostname(a.url)"))?.query_map(params![v[0],v[1],v[2],v[3],v[4],v[5],v[6]],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
 }
 pub fn matching_count(c: &Connection, q: &Query) -> Result<u32> {
     let v = query_values(q);
     Ok(c.query_row(
         &format!("SELECT count(*) FROM articles a WHERE {FILTER}"),
-        params![v[0], v[1], v[2], v[3], v[4], v[5]],
+        params![v[0], v[1], v[2], v[3], v[4], v[5], v[6]],
         |r| r.get(0),
     )?)
 }
@@ -239,6 +244,23 @@ pub fn delete(c: &mut Connection, ids: &[ArticleId]) -> Result<usize> {
     tx.commit()?;
     Ok(count)
 }
+/// Archive every article matching `q` (e.g. one publication). Reversible, so
+/// no count guard; reuses `update` to keep lean cache/media cleanup in one place.
+pub fn archive_matching(c: &mut Connection, q: &Query) -> Result<usize> {
+    let v = query_values(q);
+    let ids = c
+        .prepare(&format!(
+            "SELECT a.id FROM articles a WHERE {FILTER} AND a.archived_at IS NULL"
+        ))?
+        .query_map(params![v[0], v[1], v[2], v[3], v[4], v[5], v[6]], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in &ids {
+        update(c, &ArticleId(id.clone()), None, Some(true))?;
+    }
+    Ok(ids.len())
+}
 pub fn delete_matching(c: &mut Connection, q: &Query, expected: u32) -> Result<usize> {
     let _reservation = reserve_write(c, 131_072 + expected as u64 * 8192)?;
     let tx = c.transaction()?;
@@ -247,7 +269,7 @@ pub fn delete_matching(c: &mut Connection, q: &Query, expected: u32) -> Result<u
         .prepare(&format!(
             "SELECT a.id FROM articles a WHERE {FILTER} ORDER BY a.id"
         ))?
-        .query_map(params![v[0], v[1], v[2], v[3], v[4], v[5]], |r| {
+        .query_map(params![v[0], v[1], v[2], v[3], v[4], v[5], v[6]], |r| {
             r.get::<_, String>(0)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
